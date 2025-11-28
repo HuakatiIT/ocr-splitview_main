@@ -12,7 +12,10 @@ type Tab = 'ai' | 'database' | 'developer';
 type DbProvider = 'local' | 'mysql' | 'oracle';
 
 const SETTINGS_KEY = 'ocr_app_settings';
-const API_URL = 'http://localhost:3001/api';
+
+// 🔥 แก้ไขจุดที่ 1: ใช้ Base URL จาก .env (ถ้าไม่มีให้ใช้ localhost)
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+const API_URL = `${BASE_URL}/api`; // ต่อท้ายด้วย /api สำหรับเรียก Backend ปกติ
 
 const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const currentUser = getCurrentUser();
@@ -146,12 +149,10 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
 
   const handleRequestApiKey = async () => {
     if (currentUser) {
-      // ถ้ามี Key ที่ Active อยู่ ให้แสดง Modal ยืนยัน (Revoke)
       if (userApiKey && userApiKey.status === 'active') {
           setShowRevokeConfirm(true);
           return;
       }
-      // ถ้าไม่มี Key หรือ Key หมดอายุแล้ว ขอใหม่ได้เลย
       await executeRequestKey();
     }
   };
@@ -208,14 +209,20 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const focusBlue = isAdmin ? "focus:ring-2 focus:ring-blue-600 focus:border-blue-600" : "";
   const focusRed = isAdmin ? "focus:ring-2 focus:ring-red-600 focus:border-red-600" : "";
 
-  const isKeyExpired = userApiKey?.expiresAt && new Date(userApiKey.expiresAt) < new Date();
+  // Logic การแสดงผลวันหมดอายุ (แก้ไขให้เป็นสิ้นสุดวัน)
+  const isKeyExpired = (() => {
+    if (!userApiKey?.expiresAt) return false;
+    const expiryDate = new Date(userApiKey.expiresAt);
+    expiryDate.setHours(23, 59, 59, 999);
+    return expiryDate < new Date();
+  })();
+
   const isLimitReached = userApiKey?.usageLimit && (userApiKey.usageCount || 0) >= userApiKey.usageLimit;
   const isKeyInvalid = isKeyExpired || isLimitReached;
 
   return (
     <div className="flex flex-col h-full bg-industrial-950 text-gray-200 overflow-y-auto relative">
       
-      {/* --- Notification Toast --- */}
       {notification && (
         <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-4 duration-300">
           <div className={`flex items-center gap-3 px-4 py-3 rounded-lg shadow-2xl border backdrop-blur-md ${
@@ -232,7 +239,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
         </div>
       )}
 
-      {/* --- Confirmation Modal --- */}
       {showRevokeConfirm && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-industrial-900 border border-red-500/30 rounded-xl shadow-2xl w-full max-w-md p-0 overflow-hidden animate-in fade-in zoom-in-95 duration-200">
@@ -247,12 +253,10 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                     </p>
                 </div>
              </div>
-             
              <div className="p-6 bg-industrial-900">
                 <p className="text-sm text-gray-400 bg-industrial-950 p-3 rounded border border-industrial-800">
                    Any applications currently using the old key will stop working immediately. Are you sure you want to proceed?
                 </p>
-                
                 <div className="flex justify-end gap-3 mt-6">
                     <button 
                         onClick={() => setShowRevokeConfirm(false)}
@@ -294,6 +298,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
         </div>
 
         <div className="space-y-8 bg-industrial-900/50 p-8 rounded-xl border border-industrial-800 shadow-xl min-h-[600px]">
+          {/* AI Tab - Only Admin */}
           {activeTab === 'ai' && isAdmin && (
             <div className="animate-in fade-in slide-in-from-left-4 duration-300">
               <section>
@@ -352,7 +357,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                       <div className="flex items-center justify-between mb-6 border-b border-industrial-800 pb-4"><div><h3 className="text-lg font-medium text-gray-200">Your API Credential</h3><p className="text-sm text-gray-500">Use this key to authenticate your requests.</p></div><div className={`px-3 py-1 rounded-full text-xs font-medium border uppercase tracking-wide ${userApiKey.status === 'active' ? 'bg-green-900/20 text-green-400 border-green-900/50' : userApiKey.status === 'pending' ? 'bg-yellow-900/20 text-yellow-400 border-yellow-900/50' : 'bg-red-900/20 text-red-400 border-red-900/50'}`}>{userApiKey.status}</div></div>
                       
                       <div className="space-y-6">
-                        {/* แสดงสถานะ Key (Active/Pending/Invalid) */}
                         {userApiKey.status === 'active' ? (
                             <>
                               {isKeyInvalid && (
@@ -398,7 +402,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                                     </div>
                                 </div>
                               </div>
-                              {/* --- Button: REQUEST RENEWAL for Active Keys (Only show if not already shown in Alert) --- */}
+
                               {!isKeyInvalid && (
                                 <div className="flex justify-end mt-4">
                                  <button 
@@ -418,11 +422,12 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                             </div>
                         )}
                         
+                        {/* 🔥 แก้ไขจุดที่ 2: ใช้ BASE_URL จาก .env 🔥 */}
                         {userApiKey.status === 'active' && (
                             <div className="pt-4 border-t border-industrial-800">
                                 <h4 className="text-sm font-medium text-gray-300 mb-2">Example Usage (cURL)</h4>
                                 <div className="bg-black/50 p-4 rounded-lg border border-industrial-800 font-mono text-xs text-gray-400 overflow-x-auto">
-                                    <span className="text-purple-400">curl</span> -X POST https://api.ocr-platform.com/v1/process \<br/>
+                                    <span className="text-purple-400">curl</span> -X POST {BASE_URL}/v1/ocr \<br/>
                                     &nbsp;&nbsp;-H <span className="text-green-400">"Authorization: Bearer {showUserKey ? userApiKey.key : 'sk-...'}"</span> \<br/>
                                     &nbsp;&nbsp;-F "file=@image.png"
                                 </div>
