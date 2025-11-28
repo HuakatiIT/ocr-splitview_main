@@ -7,18 +7,26 @@ const fs = require('fs');
 const path = require('path');
 const nodemailer = require('nodemailer');
 
+// --- [ใหม่] Library สำหรับ API Gateway ---
+const multer = require('multer');       // รับไฟล์ Upload
+const axios = require('axios');         // ยิง Request ไปหา AI Engine
+const FormData = require('form-data');  // จัดการ Form Data
+
 const app = express();
 
 app.use(cors());
 app.use(bodyParser.json());
 
-// --- Config Email Sender (ต้องแก้ไขตรงนี้!) ---
+// --- [ใหม่] ตั้งค่า Multer ให้เก็บไฟล์ใน Memory เพื่อรอส่งต่อ ---
+const upload = multer({ storage: multer.memoryStorage() });
+
+// --- Config Email Sender ---
+// (อย่าลืมแก้เป็น Email จริงของคุณถ้าต้องการใช้ระบบ Reset Password)
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    // 🔴 แก้ตรงนี้ให้เป็นของจริงครับ 🔴
-    user: '*********@gmail.com', // อีเมล Gmail ของคุณ
-    pass: '**** **** **** ****'      // รหัส App Password 16 หลักที่ได้มา
+    user: '*******@gmail.com', 
+    pass: '**** **** **** ****'      
   }
 });
 
@@ -31,8 +39,6 @@ oracledb.autoCommit = true;
 // --- Config & Keys ---
 const CONFIG_FILE = path.join(__dirname, 'db-config.json');
 const KEYS_FILE = path.join(__dirname, 'api-keys.json');
-
-// In-Memory Token Store (สำหรับ Demo Reset Password)
 const resetTokens = {}; 
 
 const DEFAULT_CONFIG = {
@@ -40,7 +46,7 @@ const DEFAULT_CONFIG = {
     mysqlHost: 'localhost',
     mysqlPort: 3306,
     mysqlUser: 'root',
-    mysqlPassword: '123456789',
+    mysqlPassword: '123456789', // แก้รหัสผ่าน DB ตามเครื่องคุณ
     mysqlDatabase: 'ocr_users_db',
     oracleHost: 'localhost',
     oraclePort: 1521,
@@ -84,7 +90,7 @@ const saveApiKeys = (keys) => {
 const getConnection = async () => {
     const settings = getGlobalConfig();
     const provider = settings.dbProvider || 'mysql';
-    console.log(`[System] Using Database: ${provider.toUpperCase()}`);
+    // console.log(`[System] Using Database: ${provider.toUpperCase()}`); // ปิด log รกหน้าจอ
 
     if (provider === 'oracle') {
         return {
@@ -113,13 +119,136 @@ const getConnection = async () => {
     }
 };
 
-// --- API Routes ---
+// ==========================================
+// 🔥 [ใหม่] API Gateway สำหรับ OCR 🔥
+// ==========================================
+// เปลี่ยนจาก /api/process เป็น /v1/ocr ตามโจทย์หัวหน้า
+// รับไฟล์ด้วย upload.single('file')
 
-// Forgot Password (ส่งอีเมลจริง)
+app.post('/v1/ocr', upload.single('file'), async (req, res) => {
+    console.log(`\n[API Gateway] Request received at /v1/ocr`);
+
+    // 1. ตรวจสอบ Authorization Header
+    const authHeader = req.headers['authorization'];
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        console.log('❌ Auth Error: Missing Header');
+        return res.status(401).json({ error: 'Missing Authorization header' });
+    }
+
+    const clientApiKey = authHeader.split(' ')[1];
+    
+    // 2. ตรวจสอบ Key ในระบบของเรา
+    const keys = getApiKeys();
+    const keyIndex = keys.findIndex(k => k.key === clientApiKey);
+
+    if (keyIndex === -1) {
+        console.log('❌ Auth Error: Invalid Key');
+        return res.status(401).json({ error: 'Invalid User API Key' });
+    }
+
+    const keyData = keys[keyIndex];
+
+    // 3. ตรวจสอบ Status, Expire, Usage
+    if (keyData.status !== 'active') {
+        console.log(`❌ Access Denied: Key is ${keyData.status}`);
+        return res.status(403).json({ error: `API Key is ${keyData.status}` });
+    }
+
+    if (keyData.expiresAt) {
+        // แปลงวันที่จากฐานข้อมูล
+        const expiryDate = new Date(keyData.expiresAt);
+        
+        // 🔥 จุดสำคัญ: ปรับเวลาให้เป็น "วินาทีสุดท้าย" ของวันนั้น (23:59:59.999)
+        // เพื่อให้ลูกค้าใช้งานได้ "จนจบวัน" ของวันที่ 28
+        expiryDate.setHours(23, 59, 59, 999);
+
+        const now = new Date();
+
+        // เช็คว่า "เวลาปัจจุบัน" เลย "วินาทีสุดท้ายของวันหมดอายุ" ไปหรือยัง?
+        // ตัวอย่าง: ตอนนี้ 21:00 (28) > หมดอายุ 23:59 (28) -> เป็น False (ยังไม่หมดอายุ) ✅
+        // ตัวอย่าง: พรุ่งนี้ 00:01 (29) > หมดอายุ 23:59 (28) -> เป็น True (หมดอายุแล้ว) ❌
+        if (now > expiryDate) {
+            console.log('❌ Access Denied: Key Expired');
+            return res.status(403).json({ error: 'API Key has expired' });
+        }
+    }
+
+    if (keyData.usageLimit !== null && (keyData.usageCount || 0) >= keyData.usageLimit) {
+        console.log('❌ Access Denied: Usage Limit Exceeded');
+        return res.status(429).json({ error: 'Usage limit exceeded' });
+    }
+
+    // 4. ส่งต่อให้ Typhoon Engine (Proxy)
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+
+        console.log('✅ Security Passed. Forwarding to Engine...');
+
+        // ดึง Config ของระบบ (ที่มี Key จริงของบริษัท)
+        const systemConfig = getGlobalConfig();
+
+        // เตรียม Form Data
+        const formData = new FormData();
+        formData.append('file', req.file.buffer, req.file.originalname);
+        formData.append('model', systemConfig.model);
+        formData.append('task_type', systemConfig.taskType);
+        formData.append('max_tokens', String(systemConfig.maxTokens));
+        formData.append('temperature', String(systemConfig.temperature));
+        formData.append('top_p', String(systemConfig.topP));
+        formData.append('repetition_penalty', String(systemConfig.repetitionPenalty));
+
+        // แก้ไข URL ให้ถูกต้อง (ป้องกัน // ซ้อน)
+        let typhoonUrl = systemConfig.baseUrl.trim();
+        if (typhoonUrl.endsWith('/')) typhoonUrl = typhoonUrl.slice(0, -1);
+        if (!typhoonUrl.endsWith('/ocr')) typhoonUrl += '/ocr';
+
+        // ยิง Request (Server-to-Server)
+        const response = await axios.post(typhoonUrl, formData, {
+            headers: {
+                ...formData.getHeaders(),
+                'Authorization': `Bearer ${systemConfig.apiKey}` // ใช้ Key จริงของบริษัท
+            }
+        });
+
+        // 5. อัปเดต Usage ของ User
+        keys[keyIndex].usageCount = (keys[keyIndex].usageCount || 0) + 1;
+        saveApiKeys(keys);
+
+        console.log('✅ Engine Response Success. Usage Updated.');
+        
+        // ส่งผลลัพธ์กลับ Client
+        res.json(response.data);
+
+    } catch (error) {
+        console.error('❌ Engine Proxy Error:', error.response?.data || error.message);
+        
+        const statusCode = error.response?.status || 500;
+        let finalErrorMsg = 'Failed to process image with OCR Engine';
+
+        // ดักจับ Error 401 จาก Typhoon โดยเฉพาะ
+        if (statusCode === 401) {
+             finalErrorMsg = '[System Error] OCR Engine Authentication Failed. Please contact Administrator to check System API Key.';
+        } else if (error.response?.data?.error) {
+             // ถ้ามี error msg จาก typhoon ให้เอามาแปะต่อ
+             finalErrorMsg = `[Engine Error] ${error.response.data.error}`;
+        }
+
+        res.status(statusCode).json({ 
+            error: finalErrorMsg,
+            details: error.response?.data || error.message
+        });
+    }
+});
+
+// ==========================================
+// 📌 API เดิม (Auth, Config, Admin) คงไว้เหมือนเดิม 📌
+// ==========================================
+
+// Forgot Password
 app.post('/api/forgot-password', async (req, res) => {
     const { email } = req.body;
-    
-    // สร้าง OTP 6 หลัก
     const token = Math.floor(100000 + Math.random() * 900000).toString();
     resetTokens[email] = token;
     
@@ -130,78 +259,50 @@ app.post('/api/forgot-password', async (req, res) => {
         to: email,
         subject: 'Reset Your Password',
         text: `Your password reset code is: ${token}`,
-        html: `
-            <h3>Password Reset Request</h3>
-            <p>You requested to reset your password for OCR SplitView.</p>
-            <p>Your reset code is:</p>
-            <h1 style="color: #2563eb; letter-spacing: 5px;">${token}</h1>
-            <p>If you did not request this, please ignore this email.</p>
-        `
+        html: `<h3>Password Reset</h3><h1>${token}</h1>`
     };
 
     try {
         await transporter.sendMail(mailOptions);
-        console.log(`✅ Email sent successfully to ${email}`);
-        res.json({ message: 'Reset code sent to your email.' });
+        res.json({ message: 'Reset code sent.' });
     } catch (error) {
-        // Fallback Mode: ถ้าส่งเมลไม่ผ่าน ให้แสดงรหัสใน Console แทน (สำหรับ Dev)
         console.error('❌ Failed to send email:', error.message);
-        console.log('---------------------------------------------------');
-        console.log(`🔑 [DEV MODE] YOUR RESET CODE IS:  >>  ${token}  <<`);
-        console.log('---------------------------------------------------');
-        
-        // ส่ง token กลับไปให้ Frontend เฉพาะตอน Dev เพื่อให้ Test ผ่านได้
-        res.json({ 
-            message: 'Email delivery failed (Check Server Console for Code).',
-            devToken: token 
-        });
+        console.log(`🔑 [DEV MODE] CODE: ${token}`);
+        res.json({ message: 'Email failed (See Console)', devToken: token });
     }
 });
 
-// Reset Password (Confirm)
+// Reset Password Confirm
 app.post('/api/reset-password', async (req, res) => {
     const { email, token, newPassword } = req.body;
-    
     if (!resetTokens[email] || resetTokens[email] !== token) {
-        return res.status(400).json({ message: 'Invalid or expired reset token' });
+        return res.status(400).json({ message: 'Invalid token' });
     }
-
     let db = null;
     try {
         db = await getConnection();
-        if (db.type === 'mysql') {
-            await db.conn.query('UPDATE users SET password = ? WHERE email = ?', [newPassword, email]);
-        } else {
-            await db.conn.execute('UPDATE users SET password = :1 WHERE email = :2', [newPassword, email]);
-        }
+        if (db.type === 'mysql') await db.conn.query('UPDATE users SET password = ? WHERE email = ?', [newPassword, email]);
+        else await db.conn.execute('UPDATE users SET password = :1 WHERE email = :2', [newPassword, email]);
         delete resetTokens[email];
-        res.json({ message: 'Password updated successfully' });
-    } catch (err) {
-        res.status(500).json({ message: 'Failed to update password', error: err.message });
-    } finally {
-        if (db) {
-            if (db.type === 'oracle') await db.conn.close();
-            else db.conn.end();
-        }
-    }
+        res.json({ message: 'Password updated' });
+    } catch (err) { res.status(500).json({ message: 'Failed', error: err.message }); }
+    finally { if(db) (db.type === 'oracle' ? await db.conn.close() : db.conn.end()); }
 });
 
-// Config
+// Config APIs
 app.get('/api/config', (req, res) => res.json(getGlobalConfig()));
 app.post('/api/config', (req, res) => {
     try { saveGlobalConfig(req.body); res.json({ message: 'Saved' }); } 
     catch (e) { res.status(500).json({ error: 'Failed' }); }
 });
 
-// Keys
+// Keys Management APIs
 app.get('/api/keys', (req, res) => res.json(getApiKeys()));
 app.get('/api/keys/user/:userId', (req, res) => {
     const { userId } = req.params;
     const keys = getApiKeys();
     const userKey = keys.find(k => String(k.userId) === String(userId));
-    if (userKey && userKey.status !== 'active') {
-        return res.json({ ...userKey, key: '' });
-    }
+    if (userKey && userKey.status !== 'active') return res.json({ ...userKey, key: '' });
     res.json(userKey || null);
 });
 app.post('/api/keys/request', (req, res) => {
@@ -212,9 +313,7 @@ app.post('/api/keys/request', (req, res) => {
         id: `key-${Date.now()}`,
         userId,
         key: 'sk-ocr-' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15),
-        status: 'pending',
-        createdAt: new Date().toISOString(),
-        expiresAt: null, usageLimit: null, usageCount: 0
+        status: 'pending', createdAt: new Date().toISOString(), expiresAt: null, usageLimit: null, usageCount: 0
     };
     cleanKeys.push(newKey);
     saveApiKeys(cleanKeys);
@@ -234,38 +333,8 @@ app.put('/api/keys/:id/status', (req, res) => {
 app.delete('/api/keys/:id', (req, res) => {
     const { id } = req.params;
     const keys = getApiKeys();
-    const updatedKeys = keys.filter(k => k.id !== id);
-    saveApiKeys(updatedKeys);
+    saveApiKeys(keys.filter(k => k.id !== id));
     res.json({ message: 'Deleted' });
-});
-
-// Mock OCR Process
-app.post('/api/process', (req, res) => {
-    const authHeader = req.headers['authorization'];
-    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ error: 'Missing Key' });
-    const apiKeyStr = authHeader.split(' ')[1];
-    const keys = getApiKeys();
-    const keyIndex = keys.findIndex(k => k.key === apiKeyStr);
-    if (keyIndex === -1) return res.status(401).json({ error: 'Invalid API Key' });
-    const key = keys[keyIndex];
-    if (key.status !== 'active') return res.status(403).json({ error: `API Key is ${key.status}` });
-    
-    // 3. เช็ควันหมดอายุ (แก้ไขใหม่: ให้หมดอายุที่ "สิ้นวัน" ของวันที่เลือก)
-    if (key.expiresAt) {
-        const expiryDate = new Date(key.expiresAt);
-        expiryDate.setHours(23, 59, 59, 999); // ปรับให้เป็นเวลา 23:59:59.999 ของวันนั้น
-        
-        if (expiryDate < new Date()) {
-            return res.status(403).json({ error: 'API Key has expired' });
-        }
-    }
-
-    if (key.usageLimit !== null && (key.usageCount || 0) >= key.usageLimit) return res.status(429).json({ error: 'Usage limit exceeded' });
-
-    key.usageCount = (key.usageCount || 0) + 1;
-    keys[keyIndex] = key;
-    saveApiKeys(keys);
-    res.json({ status: 'success', message: 'Image processed', usage: { current: key.usageCount, limit: key.usageLimit || 'Unlimited' } });
 });
 
 // Test Connection
@@ -288,7 +357,7 @@ app.post('/api/test-db-connection', async (req, res) => {
     } else { res.status(400).json({ status: 'error', message: 'Unknown provider' }); }
 });
 
-// Auth APIs
+// Auth APIs (Login/Register)
 app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
     let db = null;
@@ -300,10 +369,7 @@ app.post('/api/login', async (req, res) => {
             user = results[0];
         } else {
             const result = await db.conn.execute(`SELECT * FROM users WHERE email = :1 AND password = :2`, [email, password], { outFormat: oracledb.OUT_FORMAT_OBJECT });
-            if (result.rows.length > 0) {
-                const row = result.rows[0];
-                user = { id: row.ID, email: row.EMAIL, name: row.NAME, role: row.ROLE, status: row.STATUS, createdAt: row.CREATED_AT };
-            }
+            if (result.rows.length > 0) user = { id: result.rows[0].ID, email: result.rows[0].EMAIL, name: result.rows[0].NAME, role: result.rows[0].ROLE, status: result.rows[0].STATUS, createdAt: result.rows[0].CREATED_AT };
         }
         if (user) {
             if (user.status === 'pending') return res.status(403).json({ message: 'Account pending approval' });
@@ -311,7 +377,7 @@ app.post('/api/login', async (req, res) => {
             res.json(user);
         } else { res.status(401).json({ message: 'Invalid credentials' }); }
     } catch (err) { res.status(500).json({ error: err.message }); }
-    finally { if (db && db.type === 'oracle') await db.conn.close(); else if(db) db.conn.end(); }
+    finally { if(db) (db.type === 'oracle' ? await db.conn.close() : db.conn.end()); }
 });
 
 app.post('/api/register', async (req, res) => {
@@ -326,10 +392,10 @@ app.post('/api/register', async (req, res) => {
         if (err.message && (err.message.includes('Duplicate') || err.message.includes('unique constraint'))) return res.status(400).json({ message: 'Email exists' });
         res.status(500).json({ error: err.message }); 
     }
-    finally { if (db && db.type === 'oracle') await db.conn.close(); else if(db) db.conn.end(); }
+    finally { if(db) (db.type === 'oracle' ? await db.conn.close() : db.conn.end()); }
 });
 
-// Admin APIs
+// Admin User APIs
 app.get('/api/users', async (req, res) => {
     let db = null;
     try {
@@ -343,7 +409,7 @@ app.get('/api/users', async (req, res) => {
         }
         res.json(users);
     } catch (err) { res.status(500).json({ error: err.message }); }
-    finally { if (db && db.type === 'oracle') await db.conn.close(); else if(db) db.conn.end(); }
+    finally { if(db) (db.type === 'oracle' ? await db.conn.close() : db.conn.end()); }
 });
 
 app.put('/api/users/:id/status', async (req, res) => {
@@ -356,7 +422,7 @@ app.put('/api/users/:id/status', async (req, res) => {
         else await db.conn.execute('UPDATE users SET status = :1 WHERE id = :2', [status, id]);
         res.json({ message: 'Updated' });
     } catch (err) { res.status(500).json({ error: err.message }); }
-    finally { if (db && db.type === 'oracle') await db.conn.close(); else if(db) db.conn.end(); }
+    finally { if(db) (db.type === 'oracle' ? await db.conn.close() : db.conn.end()); }
 });
 
 app.delete('/api/users/:id', async (req, res) => {
@@ -368,10 +434,11 @@ app.delete('/api/users/:id', async (req, res) => {
         else await db.conn.execute('DELETE FROM users WHERE id = :1', [id]);
         res.json({ message: 'Deleted' });
     } catch (err) { res.status(500).json({ error: err.message }); }
-    finally { if (db && db.type === 'oracle') await db.conn.close(); else if(db) db.conn.end(); }
+    finally { if(db) (db.type === 'oracle' ? await db.conn.close() : db.conn.end()); }
 });
 
 const PORT = 3001;
 app.listen(PORT, () => {
-    console.log(`🚀 Backend server running on port ${PORT} (API Keys & DB Config Enabled)`);
+    console.log(`🚀 Backend server running on port ${PORT}`);
+    console.log(`✨ API Gateway ready at: http://localhost:${PORT}/v1/ocr`);
 });
