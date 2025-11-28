@@ -1,0 +1,5 @@
+{
+  "name": "OCR-SplitView",
+  "description": "A modern, industrial-styled split-view application for extracting text from images using local OCR and converting it to structured JSON.",
+  "requestFramePermissions": []
+}
