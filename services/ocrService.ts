@@ -1,108 +1,61 @@
-// Replaces Tesseract.js with Typhoon OCR API fetch call
+import { getUserApiKey } from './apiKeyService';
+import { getCurrentUser } from './authService';
+
+// Replaces Tesseract.js with Typhoon OCR API fetch call via Local Proxy
 
 interface OcrProgress {
   status: string;
   progress: number;
 }
 
-interface OcrSettings {
-  apiKey: string;
-  baseUrl: string;
-  model: string;
-  taskType: string;
-  maxTokens: number;
-  temperature: number;
-  topP: number;
-  repetitionPenalty: number;
-}
+// URL ของ API Gateway ที่เราสร้างไว้ใน server.js
+//const GATEWAY_URL = 'http://localhost:3001/v1/ocr';
 
-// --- แก้ไข: ฟังก์ชันดึง Settings จาก Server (Async) ---
-const getSettings = async (): Promise<OcrSettings> => {
-  const defaults: OcrSettings = {
-    apiKey: '',
-    baseUrl: 'https://api.opentyphoon.ai/v1',
-    model: 'typhoon-ocr',
-    taskType: 'default',
-    maxTokens: 16000,
-    temperature: 0.1,
-    topP: 0.6,
-    repetitionPenalty: 1.1,
-  };
-  
-  try {
-    // 1. ยิงไปขอ Config จาก Server (Global Config ที่ Admin ตั้ง)
-    const response = await fetch('http://localhost:3001/api/config');
-    if (response.ok) {
-       const serverConfig = await response.json();
-       // ผสมค่า Default เข้ากับค่าจาก Server
-       return { ...defaults, ...serverConfig };
-    }
-  } catch (e) {
-    console.error("Failed to fetch global config for OCR", e);
-  }
-
-  // Fallback: ถ้าดึง Server ไม่ได้ ค่อยไปดู LocalStorage (เผื่อกรณี Server ตาย)
-  const saved = localStorage.getItem('ocr_app_settings');
-  if (saved) {
-    try {
-      return { ...defaults, ...JSON.parse(saved) };
-    } catch (e) {}
-  }
-  
-  return defaults;
-};
+// 🟢 อ่านจาก Environment Variable (ถ้าไม่มีให้ใช้ localhost เป็นค่าสำรอง)
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+const GATEWAY_URL = `${BASE_URL}/v1/ocr`;
 
 export const processImage = async (
   imageUrl: string, 
   onProgress: (progress: OcrProgress) => void
 ): Promise<{ text: string; confidence: number }> => {
   
-  // --- ต้องใช้ await เพราะ getSettings เป็น Async แล้ว ---
-  const settings = await getSettings(); 
+  // 1. ดึงข้อมูล User ปัจจุบัน
+  const user = getCurrentUser();
+  if (!user) {
+    throw new Error("User not logged in. Please login to use OCR.");
+  }
+
+  // 2. ดึง API Key ของ User (ตั๋วผ่านทาง)
+  const userKeyData = await getUserApiKey(user.id);
   
-  // Validate and Sanitize API Key
-  const rawApiKey = settings.apiKey || '';
-  const apiKey = rawApiKey.trim();
-
-  if (!apiKey) {
-    throw new Error("System API Key is missing. Please contact Admin.");
+  if (!userKeyData) {
+      throw new Error("API Key not found. Please request a key in Settings.");
+  }
+  
+  if (userKeyData.status !== 'active') {
+      throw new Error(`Your API Key is ${userKeyData.status}. Please check Settings.`);
   }
 
-  // ... (ส่วนที่เหลือเหมือนเดิม) ...
-
-  // Check for non-ASCII characters which break HTTP headers
-  if (/[^\x00-\x7F]/.test(apiKey)) {
-    throw new Error("API Key contains invalid non-ASCII characters.");
-  }
+  const apiKey = userKeyData.key;
 
   try {
-    // 1. Convert the blob URL (previewUrl) back to a File/Blob
+    // 3. แปลงรูปให้พร้อมส่ง
     onProgress({ status: "Preparing Image", progress: 0.1 });
     const imageRes = await fetch(imageUrl);
     const blob = await imageRes.blob();
     
-    // 2. Prepare FormData
+    // 4. ส่งแค่ไฟล์อย่างเดียว (ไม่ต้องส่ง Config/Model แล้ว Backend จัดการเอง)
     const formData = new FormData();
     formData.append('file', blob, 'image.png'); 
-    formData.append('model', settings.model);
-    formData.append('task_type', settings.taskType);
-    formData.append('max_tokens', settings.maxTokens.toString());
-    formData.append('temperature', settings.temperature.toString());
-    formData.append('top_p', settings.topP.toString());
-    formData.append('repetition_penalty', settings.repetitionPenalty.toString());
 
-    // 3. Call Typhoon API
-    onProgress({ status: "Uploading to Typhoon OCR", progress: 0.3 });
+    // 5. ยิงเข้า API Gateway ของเรา
+    onProgress({ status: "Uploading to Server", progress: 0.3 });
     
-    // Construct endpoint
-    let endpoint = settings.baseUrl.trim();
-    if (endpoint.endsWith('/v1')) endpoint += '/ocr';
-    else if (!endpoint.endsWith('/ocr')) endpoint += '/ocr'; 
-    
-    const response = await fetch(endpoint, {
+    const response = await fetch(GATEWAY_URL, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`
+        'Authorization': `Bearer ${apiKey}` // ส่ง User Key ไปเช็คสิทธิ์
       },
       body: formData,
     });
@@ -110,15 +63,22 @@ export const processImage = async (
     onProgress({ status: "Processing", progress: 0.7 });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error('API Error details:', errorText);
-      throw new Error(`API Error ${response.status}: ${errorText}`);
+      let errorMsg = `API Error ${response.status}`;
+      try {
+          const errorData = await response.json();
+          if (errorData.error) errorMsg = errorData.error;
+          if (errorData.message) errorMsg += `: ${errorData.message}`;
+      } catch (e) {
+          const text = await response.text();
+          if (text) errorMsg = text;
+      }
+      throw new Error(errorMsg);
     }
 
     const result = await response.json();
     onProgress({ status: "Finalizing", progress: 0.9 });
 
-    // 4. Parse Result
+    // 6. แกะผลลัพธ์ (Logic เดิม)
     const extractedTexts: string[] = [];
     
     if (result.results && Array.isArray(result.results)) {
@@ -150,7 +110,7 @@ export const processImage = async (
     };
 
   } catch (error: any) {
-    console.error("OCR API Failed", error);
+    console.error("OCR Process Failed", error);
     const errorMessage = error instanceof Error ? error.message : "Unknown error occurred.";
     throw new Error(errorMessage);
   }
