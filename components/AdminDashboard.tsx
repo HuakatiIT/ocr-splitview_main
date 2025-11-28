@@ -327,7 +327,13 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     apiUsers.map((user) => {
                       const realStatus = (() => {
                         if (user.apiKey!.status !== 'active') return { label: user.apiKey!.status, color: 'red' };
-                        if (user.apiKey!.expiresAt && new Date(user.apiKey!.expiresAt) < new Date()) return { label: 'Expired', color: 'red' };
+                        if (user.apiKey!.expiresAt) {
+                            const expiryDate = new Date(user.apiKey!.expiresAt);
+                            expiryDate.setHours(23, 59, 59, 999); // ปรับให้เป็นสิ้นสุดวัน
+                            if (expiryDate < new Date()) {
+                                return { label: 'Expired', color: 'red' };
+                            }
+                        }
                         if (user.apiKey!.usageLimit && (user.apiKey!.usageCount || 0) >= user.apiKey!.usageLimit) return { label: 'Limit Reached', color: 'orange' };
                         return { label: 'active', color: 'purple' };
                       })();
