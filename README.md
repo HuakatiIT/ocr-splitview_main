@@ -85,7 +85,7 @@ INSERT INTO users (email, password, name, role, status)
 VALUES ('admin@example.com', 'admin123', 'System Admin', 'admin', 'active');
 
 
-Oracle Database (Docker)
+ทางเลือกที่ B: Oracle Database (Docker)
 
 4. สร้าง Database Container:
 รันคำสั่ง Docker เพื่อสร้าง Oracle Database Free Edition (รองรับ UTF8):
