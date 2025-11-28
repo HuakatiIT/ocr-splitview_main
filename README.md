@@ -52,6 +52,7 @@ npm init -y
 - ติดตั้งไลบรารีที่จำเป็นทั้งหมด (Core, Database, Email):
 
 npm install express mysql2 cors body-parser oracledb nodemailer
+npm install multer axios form-data
 
 
 3. การตั้งค่าฐานข้อมูล (Database Configuration)
@@ -163,5 +164,4 @@ COMMIT;
 การทดสอบ API (cURL Test):
 ตรวจสอบการตัดยอดการใช้งาน (Usage Limit) ผ่าน Terminal:
 
-curl -X POST http://localhost:3001/api/process \
-  -H "Authorization: Bearer sk-ocr-YOUR_API_KEY_HERE"
+curl -X POST http://localhost:3001/v1/ocr -H "Authorization: Bearer sk-ocr-iz2g2xoigsqralwj6ektab" -F "file=@test.jpg"
