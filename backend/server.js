@@ -441,6 +441,18 @@ app.delete('/api/users/:id', async (req, res) => {
     finally { if(db) (db.type === 'oracle' ? await db.conn.close() : db.conn.end()); }
 });
 
+// เพิ่ม API สำหรับลบไฟล์ config (Factory Reset)
+app.delete('/api/config', (req, res) => {
+    try {
+        if (fs.existsSync(CONFIG_FILE)) {
+            fs.unlinkSync(CONFIG_FILE); // ลบไฟล์ทิ้งเลย
+        }
+        res.json({ message: 'Reset to factory settings (.env)' });
+    } catch (e) {
+        res.status(500).json({ error: 'Failed to reset config' });
+    }
+});
+
 // ✅ 4. เปลี่ยน Port เป็นค่าจาก .env
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
