@@ -53,6 +53,7 @@ npm init -y
 
 npm install express mysql2 cors body-parser oracledb nodemailer
 npm install multer axios form-data
+npm install dotenv
 
 
 3. การตั้งค่าฐานข้อมูล (Database Configuration)
