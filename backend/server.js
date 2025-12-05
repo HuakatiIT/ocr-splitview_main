@@ -164,7 +164,7 @@ app.post('/v1/ocr', upload.single('file'), async (req, res) => {
 
     if (keyIndex === -1) {
         console.log('❌ Auth Error: Invalid Key');
-        return res.status(401).json({ error: '[Local] Invalid User API Key' });
+        return res.status(401).json({ error: 'Invalid User API Key' });
     }
 
     const keyData = keys[keyIndex];
