@@ -51,10 +51,7 @@ npm init -y
 
 - ติดตั้งไลบรารีที่จำเป็นทั้งหมด (Core, Database, Email):
 
-npm install express mysql2 cors body-parser oracledb nodemailer
-npm install multer axios form-data
-npm install dotenv
-
+npm install express mysql2 cors body-parser oracledb nodemailer multer axios form-data dotenv
 
 3. การตั้งค่าฐานข้อมูล (Database Configuration)
 
