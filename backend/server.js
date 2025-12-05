@@ -1,3 +1,6 @@
+// ✅ 1. เพิ่มบรรทัดนี้บนสุด เพื่อโหลดค่าจาก .env
+require('dotenv').config();
+
 const express = require('express');
 const mysql = require('mysql2');
 const oracledb = require('oracledb');
@@ -7,26 +10,26 @@ const fs = require('fs');
 const path = require('path');
 const nodemailer = require('nodemailer');
 
-// --- [ใหม่] Library สำหรับ API Gateway ---
-const multer = require('multer');       // รับไฟล์ Upload
-const axios = require('axios');         // ยิง Request ไปหา AI Engine
-const FormData = require('form-data');  // จัดการ Form Data
+// Library สำหรับ API Gateway
+const multer = require('multer');       
+const axios = require('axios');         
+const FormData = require('form-data');  
 
 const app = express();
 
 app.use(cors());
 app.use(bodyParser.json());
 
-// --- [ใหม่] ตั้งค่า Multer ให้เก็บไฟล์ใน Memory เพื่อรอส่งต่อ ---
+// ตั้งค่า Multer
 const upload = multer({ storage: multer.memoryStorage() });
 
-// --- Config Email Sender ---
-// (อย่าลืมแก้เป็น Email จริงของคุณถ้าต้องการใช้ระบบ Reset Password)
+// --- [Dynamic] Config Email Sender ---
+// ✅ 2. เปลี่ยนมาใช้ process.env
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: '*******@gmail.com', 
-    pass: '**** **** **** ****'      
+    user: process.env.MAIL_USER, 
+    pass: process.env.MAIL_PASS
   }
 });
 
@@ -41,21 +44,29 @@ const CONFIG_FILE = path.join(__dirname, 'db-config.json');
 const KEYS_FILE = path.join(__dirname, 'api-keys.json');
 const resetTokens = {}; 
 
+// --- [Dynamic] Default Config ---
+// ✅ 3. เปลี่ยนค่า Hardcode ทั้งหมดเป็น process.env
 const DEFAULT_CONFIG = {
-    dbProvider: 'mysql',
-    mysqlHost: 'localhost',
-    mysqlPort: 3306,
-    mysqlUser: 'root',
-    mysqlPassword: '123456789', // แก้รหัสผ่าน DB ตามเครื่องคุณ
-    mysqlDatabase: 'ocr_users_db',
-    oracleHost: 'localhost',
-    oraclePort: 1521,
-    oracleUser: 'SYSTEM',
-    oraclePassword: 'admin123',
-    oracleServiceName: 'FREEPDB1',
-    // AI Config Default
-    apiKey: '',
-    baseUrl: 'https://api.opentyphoon.ai/v1',
+    // Database Config
+    dbProvider: process.env.DB_PROVIDER || 'mysql',
+    
+    // MySQL
+    mysqlHost: process.env.MYSQL_HOST || 'localhost',
+    mysqlPort: parseInt(process.env.MYSQL_PORT || '3306'),
+    mysqlUser: process.env.MYSQL_USER || 'root',
+    mysqlPassword: process.env.MYSQL_PASS || '', // ถ้าไม่มีใน env ให้เป็นค่าว่าง
+    mysqlDatabase: process.env.MYSQL_DB || 'ocr_users_db',
+    
+    // Oracle
+    oracleHost: process.env.ORACLE_HOST || 'localhost',
+    oraclePort: parseInt(process.env.ORACLE_PORT || '1521'),
+    oracleUser: process.env.ORACLE_USER || 'SYSTEM',
+    oraclePassword: process.env.ORACLE_PASS || '',
+    oracleServiceName: process.env.ORACLE_SERVICE || 'FREEPDB1',
+    
+    // AI Config (Typhoon)
+    apiKey: process.env.TYPHOON_API_KEY || '', // Key ของบริษัท
+    baseUrl: process.env.TYPHOON_BASE_URL || 'https://api.opentyphoon.ai/v1',
     model: 'typhoon-ocr',
     taskType: 'default',
     maxTokens: 16000,
@@ -65,10 +76,23 @@ const DEFAULT_CONFIG = {
 };
 
 const getGlobalConfig = () => {
+    // 1. เริ่มต้นด้วยค่าจาก .env (เป็นค่าตั้งต้น หรือ Factory Setting)
+    let finalConfig = { ...DEFAULT_CONFIG };
+
+    // 2. เช็คว่า Admin เคยกด Save หรือยัง? (มีไฟล์ db-config.json ไหม?)
     if (fs.existsSync(CONFIG_FILE)) {
-        try { return { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) }; } catch (e) {}
+        try { 
+            const fileConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+            
+            // 🔥 ให้ค่าจากไฟล์ที่ Admin Save "ทับ" ค่าจาก .env ไปเลย
+            // Admin อยากแก้อะไร หน้าเว็บต้องมีผลที่สุด
+            finalConfig = { ...finalConfig, ...fileConfig }; 
+        } catch (e) {
+            console.error("Error reading config file:", e);
+        }
     }
-    return DEFAULT_CONFIG;
+
+    return finalConfig;
 };
 
 const saveGlobalConfig = (newConfig) => {
@@ -90,7 +114,6 @@ const saveApiKeys = (keys) => {
 const getConnection = async () => {
     const settings = getGlobalConfig();
     const provider = settings.dbProvider || 'mysql';
-    // console.log(`[System] Using Database: ${provider.toUpperCase()}`); // ปิด log รกหน้าจอ
 
     if (provider === 'oracle') {
         return {
@@ -120,10 +143,8 @@ const getConnection = async () => {
 };
 
 // ==========================================
-// 🔥 [ใหม่] API Gateway สำหรับ OCR 🔥
+// 🔥 API Gateway Logic (เหมือนเดิม 100%) 🔥
 // ==========================================
-// เปลี่ยนจาก /api/process เป็น /v1/ocr ตามโจทย์หัวหน้า
-// รับไฟล์ด้วย upload.single('file')
 
 app.post('/v1/ocr', upload.single('file'), async (req, res) => {
     console.log(`\n[API Gateway] Request received at /v1/ocr`);
@@ -143,7 +164,7 @@ app.post('/v1/ocr', upload.single('file'), async (req, res) => {
 
     if (keyIndex === -1) {
         console.log('❌ Auth Error: Invalid Key');
-        return res.status(401).json({ error: 'Invalid User API Key' });
+        return res.status(401).json({ error: '[Local] Invalid User API Key' });
     }
 
     const keyData = keys[keyIndex];
@@ -155,18 +176,9 @@ app.post('/v1/ocr', upload.single('file'), async (req, res) => {
     }
 
     if (keyData.expiresAt) {
-        // แปลงวันที่จากฐานข้อมูล
         const expiryDate = new Date(keyData.expiresAt);
-        
-        // 🔥 จุดสำคัญ: ปรับเวลาให้เป็น "วินาทีสุดท้าย" ของวันนั้น (23:59:59.999)
-        // เพื่อให้ลูกค้าใช้งานได้ "จนจบวัน" ของวันที่ 28
         expiryDate.setHours(23, 59, 59, 999);
-
         const now = new Date();
-
-        // เช็คว่า "เวลาปัจจุบัน" เลย "วินาทีสุดท้ายของวันหมดอายุ" ไปหรือยัง?
-        // ตัวอย่าง: ตอนนี้ 21:00 (28) > หมดอายุ 23:59 (28) -> เป็น False (ยังไม่หมดอายุ) ✅
-        // ตัวอย่าง: พรุ่งนี้ 00:01 (29) > หมดอายุ 23:59 (28) -> เป็น True (หมดอายุแล้ว) ❌
         if (now > expiryDate) {
             console.log('❌ Access Denied: Key Expired');
             return res.status(403).json({ error: 'API Key has expired' });
@@ -186,10 +198,8 @@ app.post('/v1/ocr', upload.single('file'), async (req, res) => {
 
         console.log('✅ Security Passed. Forwarding to Engine...');
 
-        // ดึง Config ของระบบ (ที่มี Key จริงของบริษัท)
         const systemConfig = getGlobalConfig();
 
-        // เตรียม Form Data
         const formData = new FormData();
         formData.append('file', req.file.buffer, req.file.originalname);
         formData.append('model', systemConfig.model);
@@ -199,26 +209,22 @@ app.post('/v1/ocr', upload.single('file'), async (req, res) => {
         formData.append('top_p', String(systemConfig.topP));
         formData.append('repetition_penalty', String(systemConfig.repetitionPenalty));
 
-        // แก้ไข URL ให้ถูกต้อง (ป้องกัน // ซ้อน)
         let typhoonUrl = systemConfig.baseUrl.trim();
         if (typhoonUrl.endsWith('/')) typhoonUrl = typhoonUrl.slice(0, -1);
         if (!typhoonUrl.endsWith('/ocr')) typhoonUrl += '/ocr';
 
-        // ยิง Request (Server-to-Server)
         const response = await axios.post(typhoonUrl, formData, {
             headers: {
                 ...formData.getHeaders(),
-                'Authorization': `Bearer ${systemConfig.apiKey}` // ใช้ Key จริงของบริษัท
+                'Authorization': `Bearer ${systemConfig.apiKey}`
             }
         });
 
-        // 5. อัปเดต Usage ของ User
         keys[keyIndex].usageCount = (keys[keyIndex].usageCount || 0) + 1;
         saveApiKeys(keys);
 
         console.log('✅ Engine Response Success. Usage Updated.');
         
-        // ส่งผลลัพธ์กลับ Client
         res.json(response.data);
 
     } catch (error) {
@@ -227,11 +233,9 @@ app.post('/v1/ocr', upload.single('file'), async (req, res) => {
         const statusCode = error.response?.status || 500;
         let finalErrorMsg = 'Failed to process image with OCR Engine';
 
-        // ดักจับ Error 401 จาก Typhoon โดยเฉพาะ
         if (statusCode === 401) {
              finalErrorMsg = '[System Error] OCR Engine Authentication Failed. Please contact Administrator to check System API Key.';
         } else if (error.response?.data?.error) {
-             // ถ้ามี error msg จาก typhoon ให้เอามาแปะต่อ
              finalErrorMsg = `[Engine Error] ${error.response.data.error}`;
         }
 
@@ -243,7 +247,7 @@ app.post('/v1/ocr', upload.single('file'), async (req, res) => {
 });
 
 // ==========================================
-// 📌 API เดิม (Auth, Config, Admin) คงไว้เหมือนเดิม 📌
+// 📌 API เดิม (Auth, Config, Admin) 📌
 // ==========================================
 
 // Forgot Password
@@ -437,7 +441,8 @@ app.delete('/api/users/:id', async (req, res) => {
     finally { if(db) (db.type === 'oracle' ? await db.conn.close() : db.conn.end()); }
 });
 
-const PORT = 3001;
+// ✅ 4. เปลี่ยน Port เป็นค่าจาก .env
+const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
     console.log(`🚀 Backend server running on port ${PORT}`);
     console.log(`✨ API Gateway ready at: http://localhost:${PORT}/v1/ocr`);
