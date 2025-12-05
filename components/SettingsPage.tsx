@@ -138,12 +138,34 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     }
   };
 
-  const handleReset = () => {
+const handleReset = async () => {
     if (!isAdmin) return;
-    if(confirm("Are you sure you want to reset settings?")) {
-      setSettings(defaultSettings);
-      setConnectionStatus('idle');
-      showNotification("Settings reset to defaults.");
+    
+    // เปลี่ยนข้อความให้ชัดเจนว่าจะเป็นการกลับไปใช้ค่าจาก .env
+    if(confirm("Are you sure you want to reset to Factory Settings? This will wipe all custom configurations and restore defaults from the server environment (.env).")) {
+      try {
+          // 1. ยิงไปบอก Server ให้ลบไฟล์ db-config.json ทิ้งซะ
+          const res = await fetch(`${API_URL}/config`, { 
+              method: 'DELETE' 
+          });
+          
+          if (res.ok) {
+              // 2. ดึงค่า Config ล่าสุดมาใหม่ (ซึ่งตอนนี้ Server จะส่งค่าจาก .env มาให้แล้ว)
+              const response = await fetch(`${API_URL}/config`);
+              if (response.ok) {
+                  const serverConfig = await response.json();
+                  setSettings(serverConfig); // อัปเดตหน้าจอให้ตรงกับ .env
+              }
+              
+              setConnectionStatus('idle');
+              showNotification("System reset to Factory Settings (.env) successfully.");
+          } else {
+              showNotification("Failed to reset settings.", "error");
+          }
+      } catch (error) {
+          console.error("Reset failed", error);
+          showNotification("Error resetting settings.", "error");
+      }
     }
   };
 
