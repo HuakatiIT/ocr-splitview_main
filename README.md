@@ -162,6 +162,8 @@ COMMIT;
 
 - Frontend: npm run dev (ในโฟลเดอร์ root)
 
+*** ทุกครั้งที่ติดตั้ง Project ใหม่ ถ้ามี ไฟล์ backend/db-config.json ให้ลบไฟล์ออกด้วยนะครับ ***
+
 การทดสอบ API (cURL Test):
 ตรวจสอบการตัดยอดการใช้งาน (Usage Limit) ผ่าน Terminal:
 
