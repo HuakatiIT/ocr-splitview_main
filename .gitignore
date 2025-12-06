@@ -11,6 +11,15 @@ node_modules
 dist
 dist-ssr
 *.local
+backend/node_modules
+backend/api-keys.json
+backend/db-config.json
+.env
+.env.local
+.env.production
+.env.development
+tmp
+.vscode
 
 # Editor directories and files
 .vscode/*

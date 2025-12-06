@@ -3,7 +3,9 @@ require('dotenv').config();
 
 const express = require('express');
 const mysql = require('mysql2');
-const oracledb = require('oracledb');
+let oracledb = null;
+try { oracledb = require('oracledb'); } 
+catch (err) { console.log('Oracle driver not installed; Oracle mode disabled'); }
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const fs = require('fs');
@@ -33,15 +35,23 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// Oracle Thin Mode
-try { oracledb.initOracleClient({ libDir: process.env.ORACLE_LIB_DIR }); } 
-catch (err) { console.log('Oracle Thin Mode Active'); }
+const MOCK_OCR = process.env.MOCK_OCR === 'true';
 
-oracledb.autoCommit = true;
+// Oracle Thin Mode
+if (oracledb) {
+  try { oracledb.initOracleClient({ libDir: process.env.ORACLE_LIB_DIR }); } 
+  catch (err) { console.log('Oracle Thin Mode Active'); }
+  oracledb.autoCommit = true;
+}
 
 // --- Config & Keys ---
-const CONFIG_FILE = path.join(__dirname, 'db-config.json');
-const KEYS_FILE = path.join(__dirname, 'api-keys.json');
+// DATA_DIR จะใช้สำหรับเก็บไฟล์ state (config/keys) เพื่อให้ mount volume ได้บน container/K8s
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+const CONFIG_FILE = path.join(DATA_DIR, 'db-config.json');
+const KEYS_FILE = path.join(DATA_DIR, 'api-keys.json');
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
 const resetTokens = {}; 
 
 // --- [Dynamic] Default Config ---
@@ -116,6 +126,7 @@ const getConnection = async () => {
     const provider = settings.dbProvider || 'mysql';
 
     if (provider === 'oracle') {
+        if (!oracledb) throw new Error('Oracle driver not available');
         return {
             type: 'oracle',
             conn: await oracledb.getConnection({
@@ -148,6 +159,23 @@ const getConnection = async () => {
 
 app.post('/v1/ocr', upload.single('file'), async (req, res) => {
     console.log(`\n[API Gateway] Request received at /v1/ocr`);
+
+    // Mock mode: skip auth and upstream call entirely
+    if (MOCK_OCR) {
+        console.log('🟢 MOCK_OCR enabled, returning stub result (no auth required)');
+        return res.json({
+            results: [
+                {
+                    success: true,
+                    message: {
+                        choices: [{
+                            message: { content: JSON.stringify({ natural_text: 'Mock OCR result for testing UI' }) }
+                        }]
+                    }
+                }
+            ]
+        });
+    }
 
     // 1. ตรวจสอบ Authorization Header
     const authHeader = req.headers['authorization'];

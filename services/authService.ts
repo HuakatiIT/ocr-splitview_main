@@ -1,7 +1,7 @@
 import { User } from '../types';
 
 //const API_URL = 'http://localhost:3001/api';
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001');
 const API_URL = `${BASE_URL}/api`;
 const CURRENT_USER_KEY = 'ocr_app_current_user';
 

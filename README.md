@@ -1,167 +1,109 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+## OCR SplitView
+แอป OCR หน้าเว็บ + API Gateway/Backend รองรับ MySQL (Oracle optional) พร้อม Proxy ไป Typhoon OCR
 
-# Run and deploy your AI Studio app
+### Stack
+- Frontend: React + Vite
+- Backend: Node/Express, MySQL (Oracle optional), Typhoon OCR proxy
+- Deploy: Docker, K8s manifests อยู่ใน `k8s/`
 
-This contains everything you need to run your app locally.
-
-View your app in AI Studio: https://ai.studio/apps/drive/1K_Hwlecxk9bbrMorXtXPqjbnoz_taVQv
-
-## Run Locally
-
-**Prerequisites:**  Node.js
-
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
-----------------------------------------------------------------------------------------------
-
-คู่มือการติดตั้งและเริ่มใช้งานระบบ OCR-SplitView System
-
-เอกสารฉบับนี้อธิบายขั้นตอนการติดตั้ง (Installation), การตั้งค่าฐานข้อมูล (Database Configuration) และการเริ่มใช้งานระบบ (Deployment) ทั้งในส่วนของ Frontend และ Backend
-
-1. การติดตั้งส่วนหน้า (Frontend Installation)
-
-เริ่มต้นด้วยการติดตั้ง Dependencies ที่จำเป็นสำหรับส่วนแสดงผล (User Interface)
-
--  เปิด Terminal ที่โฟลเดอร์หลักของโปรเจ็กต์ (Root Directory)
-
-- รันคำสั่งต่อไปนี้เพื่อติดตั้งแพ็กเกจ:
-
+### เตรียมใช้งาน (Dev)
+1) ติดตั้ง dependency
+```
 npm install
+cd backend && npm install --production --ignore-scripts
+```
+2) สร้างไฟล์ `.env` จากตัวอย่าง
+```
+cp .env.example .env
+```
+แก้ค่า `TYPHOON_API_KEY`, ค่าฐานข้อมูล, อีเมล ฯลฯ
 
-
-2. การติดตั้งส่วนหลัง (Backend Installation)
-
-ส่วนนี้สำหรับการจัดการ API, การเชื่อมต่อฐานข้อมูล และระบบส่งอีเมล
-
-- เข้าไปที่โฟลเดอร์ backend:
-
+3) รันแยก service (dev)
+```
+# backend
 cd backend
+node server.js
 
+# frontend
+cd ..
+npm run dev
+```
 
-- เตรียมสภาพแวดล้อม (หากยังไม่เคยตั้งค่า):
+### Docker (ทดสอบเร็ว)
+มี Dockerfile แยก front/back
+```
+# backend
+docker build -t ocr-backend:local -f backend/Dockerfile backend
+docker run -d --name ocr-backend -p 3001:3001 \
+  -e PORT=3001 \
+  -e DB_PROVIDER=mysql \
+  -e MYSQL_HOST=host.docker.internal \
+  -e MYSQL_PORT=3306 \
+  -e MYSQL_USER=root \
+  -e MYSQL_PASS= \
+  -e MYSQL_DB=ocr_users_db \
+  -e TYPHOON_API_KEY=your-key \
+  -v /tmp/ocr-data:/data \
+  ocr-backend:local
 
-npm init -y
+# frontend (build-time API base ใช้ backend host:port)
+docker build -t ocr-frontend:local -f Dockerfile.frontend --build-arg VITE_API_BASE_URL=http://localhost:3001 .
+docker run -d --name ocr-frontend -p 8080:80 ocr-frontend:local
+```
 
+### K8s (ตัวอย่าง)
+ไฟล์อยู่ใน `k8s/`:
+- `k8s/backend.yaml` (ConfigMap/Secret/PVC + Deployment/Service)
+- `k8s/frontend.yaml` (Deployment/Service)
+- `k8s/ingress.yaml` (ปรับ host เอง)
+- `k8s/namespace.yaml`
 
-- ติดตั้งไลบรารีที่จำเป็นทั้งหมด (Core, Database, Email):
+ขั้นตอน:
+```
+kubectl apply -f k8s/namespace.yaml
+# ปรับค่าจริงใน backend.yaml (ConfigMap/Secret/image tag) แล้ว:
+kubectl apply -f k8s/backend.yaml -f k8s/frontend.yaml
+kubectl apply -f k8s/ingress.yaml   # ถ้าใช้ ingress controller
+```
 
-npm install express mysql2 cors body-parser oracledb nodemailer multer axios form-data dotenv
-
-3. การตั้งค่าฐานข้อมูล (Database Configuration)
-
-ระบบรองรับการทำงานร่วมกับ MySQL และ Oracle Database โดยสามารถเลือกติดตั้งได้ตามความต้องการ
-
-ทางเลือกที่ A: MySQL Database (XAMPP / Docker)
-
-- PHPMyAdmin: http://127.0.0.1/phpMyAdmin
-
-- Database Name: ocr_users_db
-
-- User: root
-
-- Password: 123456789
-
-SQL Script สำหรับสร้างตาราง (MySQL):
-
+### Database
+- MySQL แนะนำ ใช้สคริปต์สร้างตาราง:
+```
 CREATE TABLE users (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    email VARCHAR(255) NOT NULL UNIQUE,
-    password VARCHAR(255) NOT NULL,
-    name VARCHAR(255) NOT NULL,
-    role ENUM('admin', 'user') DEFAULT 'user',
-    status ENUM('active', 'pending', 'rejected') DEFAULT 'pending',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(255) NOT NULL UNIQUE,
+  password VARCHAR(255) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  role ENUM('admin','user') DEFAULT 'user',
+  status ENUM('active','pending','rejected') DEFAULT 'pending',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+INSERT IGNORE INTO users (email,password,name,role,status)
+VALUES ('admin@example.com','admin123','System Admin','admin','active');
+```
+- Oracle: รองรับ แต่ต้องมี Instant Client และตั้ง `ORACLE_*` env
 
--- สร้างบัญชี Admin เริ่มต้น (รหัสผ่าน: admin123)
-INSERT INTO users (email, password, name, role, status) 
-VALUES ('admin@example.com', 'admin123', 'System Admin', 'admin', 'active');
+### State/Secrets
+- Backend เก็บไฟล์ state ที่ `DATA_DIR` (default `/data`): `db-config.json`, `api-keys.json` → mount volume/PVC
+- อย่า commit คีย์จริง/ไฟล์ state (`.gitignore` กันไว้แล้ว)
+- ใช้ `.env.example` เป็นแม่แบบ
 
+### ทดสอบ API
+```
+curl -X POST http://localhost:3001/v1/ocr \
+  -H "Authorization: Bearer <user_api_key>" \
+  -F "file=@test.jpg"
+```
 
-ทางเลือกที่ B: Oracle Database (Docker)
+## Kubernetes (ตัวอย่างขั้นตอน)
 
-4. สร้าง Database Container:
-รันคำสั่ง Docker เพื่อสร้าง Oracle Database Free Edition (รองรับ UTF8):
+1. Build images  
+   - Backend: `docker build -t <registry>/ocr-backend:latest -f backend/Dockerfile backend`  
+   - Frontend: `docker build -t <registry>/ocr-frontend:latest -f Dockerfile.frontend --build-arg VITE_API_BASE_URL=http://ocr-backend:3001 .`
+2. Push images ขึ้น registry ที่ cluster ดึงได้
+3. ปรับค่าภายใน `k8s/backend.yaml` (ConfigMap/Secret/PVC) ให้ตรงกับ DB/Email/Typhoon ของคุณ
+4. Deploy: `kubectl apply -f k8s/backend.yaml -f k8s/frontend.yaml` (และ `k8s/ingress.yaml` ถ้ามี ingress controller)
+5. Backend เก็บไฟล์ state (db-config.json, api-keys.json) ใน mount `/data` ที่มาจาก PVC ชื่อ `ocr-backend-pvc`
+6. Frontend service: `ocr-frontend` (port 80), Backend service: `ocr-backend` (port 3001)
 
-docker run -d --name oracle-db -p 1521:1521 -p 5500:5500 \
-  -e ORACLE_PWD=admin123 \
-  -e ORACLE_CHARACTERSET=AL32UTF8 \
-  -v oradata:/opt/oracle/oradata \
-  [container-registry.oracle.com/database/free:latest](https://container-registry.oracle.com/database/free:latest)
-
-
-- Service Name (SID): FREEPDB1
-
-- User: SYSTEM
-
-- Password: admin123
-
-5. เข้าสู่ SQL*Plus เพื่อสร้างตาราง:
-
-docker exec -it oracle-db sqlplus system/admin123@localhost:1521/FREEPDB1
-
-
-6. SQL Script สำหรับสร้างตาราง (Oracle):
-
-CREATE TABLE users (
-    id NUMBER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-    email VARCHAR2(255) NOT NULL UNIQUE,
-    password VARCHAR2(255) NOT NULL,
-    name VARCHAR2(255) NOT NULL,
-    role VARCHAR2(20) DEFAULT 'user',
-    status VARCHAR2(20) DEFAULT 'pending',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- สร้างบัญชี Admin เริ่มต้น
-INSERT INTO users (email, password, name, role, status) 
-VALUES ('admin@example.com', 'admin123', 'System Admin', 'admin', 'active');
-
-COMMIT;
-
-
-7. การตั้งค่าระบบส่งอีเมล (Email Configuration)
-
-ระบบใช้ Gmail SMTP สำหรับการส่งรหัสรีเซ็ต (Reset Password) จำเป็นต้องตั้งค่า App Password เพื่อความปลอดภัย
-
-ขั้นตอนการขอ App Password:
-
-- ไปที่ Google Account Security
-
-- เปิดใช้งาน 2-Step Verification (หากยังไม่ได้เปิด)
-
-- ค้นหาเมนู "App passwords"
-
-- สร้างรหัสใหม่โดยตั้งชื่อว่า "OCR App"
-
-- คัดลอกรหัส 16 หลักที่ได้รับ (เช่น abcd efgh ijkl mnop)
-
-- นำไปใส่ในไฟล์ backend/server.js ตรงส่วน auth
-
-
-8. การเริ่มใช้งานและการทดสอบ (Usage & Testing)
-
-บัญชีผู้ดูแลระบบเริ่มต้น (Default Admin):
-
-- Email: admin@example.com
-
-- Password: admin123
-
-คำสั่งเริ่มระบบ:
-
-- Backend: node server.js (ในโฟลเดอร์ backend)
-
-- Frontend: npm run dev (ในโฟลเดอร์ root)
-
-*** ทุกครั้งที่ติดตั้ง Project ใหม่ ถ้ามี ไฟล์ backend/db-config.json ให้ลบไฟล์ออกด้วยนะครับ ***
-
-การทดสอบ API (cURL Test):
-ตรวจสอบการตัดยอดการใช้งาน (Usage Limit) ผ่าน Terminal:
-
-curl -X POST http://localhost:3001/v1/ocr -H "Authorization: Bearer sk-ocr-iz2g2xoigsqralwj6ektab" -F "file=@test.jpg"
+> หมายเหตุ: ขณะนี้ image backend สร้างแบบ MySQL-only โดยใช้ `npm install --ignore-scripts` ทำให้ไม่ต้องมี Oracle Instant Client หากต้องใช้ Oracle ให้ติดตั้ง oracledb + Instant Client และเปิด provider=oracle

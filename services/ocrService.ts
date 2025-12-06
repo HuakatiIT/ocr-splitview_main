@@ -12,7 +12,7 @@ interface OcrProgress {
 //const GATEWAY_URL = 'http://localhost:3001/v1/ocr';
 
 // 🟢 อ่านจาก Environment Variable (ถ้าไม่มีให้ใช้ localhost เป็นค่าสำรอง)
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001');
 const GATEWAY_URL = `${BASE_URL}/v1/ocr`;
 
 export const processImage = async (

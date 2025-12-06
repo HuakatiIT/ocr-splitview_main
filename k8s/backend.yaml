@@ -1,0 +1,100 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ocr-backend-config
+  namespace: ocr
+data:
+  PORT: "3001"
+  DB_PROVIDER: "mysql"
+  MYSQL_HOST: "mysql"        # service name of your DB
+  MYSQL_PORT: "3306"
+  MYSQL_USER: "root"
+  MYSQL_PASS: "password"
+  MYSQL_DB: "ocr_users_db"
+  ORACLE_HOST: "oracle-db"
+  ORACLE_PORT: "1521"
+  ORACLE_USER: "SYSTEM"
+  ORACLE_PASS: "admin123"
+  ORACLE_SERVICE: "FREEPDB1"
+  TYPHOON_BASE_URL: "https://api.opentyphoon.ai/v1"
+  DATA_DIR: "/data"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ocr-backend-secret
+  namespace: ocr
+type: Opaque
+stringData:
+  MAIL_USER: "your-gmail@example.com"
+  MAIL_PASS: "app-password"
+  TYPHOON_API_KEY: "replace-me"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ocr-backend-pvc
+  namespace: ocr
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ocr-backend
+  namespace: ocr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ocr-backend
+  template:
+    metadata:
+      labels:
+        app: ocr-backend
+    spec:
+      containers:
+      - name: backend
+        image: your-registry/ocr-backend:1.0.0 # replace with pushed image
+        ports:
+        - containerPort: 3001
+        envFrom:
+        - configMapRef:
+            name: ocr-backend-config
+        - secretRef:
+            name: ocr-backend-secret
+        volumeMounts:
+        - name: backend-data
+          mountPath: /data
+        livenessProbe:
+          httpGet:
+            path: /api/config
+            port: 3001
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /api/config
+            port: 3001
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: backend-data
+        persistentVolumeClaim:
+          claimName: ocr-backend-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ocr-backend
+  namespace: ocr
+spec:
+  selector:
+    app: ocr-backend
+  ports:
+  - port: 3001
+    targetPort: 3001
+    protocol: TCP
