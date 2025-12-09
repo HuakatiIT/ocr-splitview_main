@@ -1,6 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
-import { Download, ScanLine, AlertCircle, CheckCircle2, Loader2, RefreshCw, X, Settings as SettingsIcon, LogOut, Shield, History, Play, Image as ImageIcon, Check, Trash2, Files } from 'lucide-react';
+import { Download, ScanLine, AlertCircle, CheckCircle2, Loader2, RefreshCw, X, Settings as SettingsIcon, LogOut, Shield, History, Play, Image as ImageIcon, Check, Trash2, Files, FileText } from 'lucide-react';
+import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { processImage } from './services/ocrService';
 import { getCurrentUser, logout } from './services/authService';
 import { saveHistoryItem } from './services/historyService';
@@ -302,6 +303,154 @@ const App: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
+  const createSearchablePdf = async (rawText: unknown, imageUrl?: string | null, imageFile?: File | null) => {
+    const safeText = typeof rawText === 'string' ? rawText : JSON.stringify(rawText ?? '', null, 2);
+    const pdfDoc = await PDFDocument.create();
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const fontSize = 12;
+    const lineHeight = fontSize * 1.4;
+    const margin = 24;
+    const defaultPage = { width: 595, height: 842 }; // A4-ish
+
+    let embeddedImage: any = null;
+    let imageDims = { ...defaultPage };
+
+    const tryEmbed = async (bytes: ArrayBuffer) => {
+      try {
+        embeddedImage = await pdfDoc.embedPng(bytes);
+      } catch {
+        embeddedImage = await pdfDoc.embedJpg(bytes);
+      }
+      imageDims = { width: embeddedImage.width, height: embeddedImage.height };
+      return true;
+    };
+
+    let embedded = false;
+
+    if (imageFile) {
+      try {
+        const fileBytes = await imageFile.arrayBuffer();
+        embedded = await tryEmbed(fileBytes);
+      } catch (err) {
+        console.warn('Failed to embed image file, will try URL', err);
+      }
+    }
+
+    if (!embedded && imageUrl) {
+      try {
+        const imgRes = await fetch(imageUrl);
+        const imgBytes = await imgRes.arrayBuffer();
+        embedded = await tryEmbed(imgBytes);
+      } catch (err) {
+        console.warn('Failed to embed image for PDF, falling back to text-only', err);
+      }
+    }
+
+    // scale image to fit within default A4 if larger
+    const fitScale = Math.min(
+      defaultPage.width / imageDims.width,
+      defaultPage.height / imageDims.height,
+      1
+    );
+    const pageWidth = embeddedImage ? imageDims.width * fitScale : defaultPage.width;
+    const pageHeight = embeddedImage ? imageDims.height * fitScale : defaultPage.height;
+    const textOpacity = embeddedImage ? 0.02 : 1;
+
+    let page = pdfDoc.addPage([pageWidth, pageHeight]);
+    if (embeddedImage) {
+      page.drawImage(embeddedImage, { x: 0, y: 0, width: pageWidth, height: pageHeight });
+    }
+
+    let y = page.getHeight() - margin;
+    const getMaxWidth = () => page.getWidth() - margin * 2;
+
+    const encodeSafe = (line: string) => {
+      try {
+        font.encodeText(line);
+        return line;
+      } catch {
+        // pdf-lib standard fonts can't encode some glyphs (e.g., Thai); keep ASCII to avoid crash
+        return line.replace(/[^\x20-\x7E]+/g, '?');
+      }
+    };
+
+    const addLine = (line: string) => {
+      if (y <= margin) {
+        page = pdfDoc.addPage([pageWidth, pageHeight]);
+        if (embeddedImage) {
+          page.drawImage(embeddedImage, { x: 0, y: 0, width: pageWidth, height: pageHeight });
+        }
+        y = page.getHeight() - margin;
+      }
+      const printable = encodeSafe(line);
+      if (!printable) {
+        y -= lineHeight;
+        return;
+      }
+      page.drawText(printable, { x: margin, y, size: fontSize, font, opacity: textOpacity });
+      y -= lineHeight;
+    };
+
+    const wrapAndAdd = (line: string) => {
+      if (!line.trim()) {
+        y -= lineHeight / 2;
+        return;
+      }
+      const words = line.split(/\s+/);
+      let current = '';
+      words.forEach((word) => {
+        const safeWord = encodeSafe(word);
+        if (!safeWord) return;
+        const candidateRaw = current ? `${current} ${safeWord}` : safeWord;
+        const width = font.widthOfTextAtSize(candidateRaw, fontSize);
+        if (width > getMaxWidth() && current) {
+          addLine(current);
+          current = safeWord;
+        } else {
+          current = candidateRaw;
+        }
+      });
+      if (current) addLine(current);
+    };
+
+    safeText.split(/\r?\n/).forEach(wrapAndAdd);
+    return pdfDoc.save();
+  };
+
+  const handleDownloadPdf = async () => {
+    try {
+      const text = isBatchMode
+        ? getBatchResults()
+            .map((item, idx) => {
+              const title = item.filename ? `${idx + 1}. ${item.filename}` : `${idx + 1}. Item`;
+              const status = `Status: ${item.status}`;
+              const body = item.text || '';
+              return `${title}\n${status}\n${body}`;
+            })
+            .join('\n\n')
+        : (ocrResult.extracted_text || '');
+
+      if (!text) {
+        handleError('No OCR text available to export');
+        return;
+      }
+
+      const pdfBytes = await createSearchablePdf(text, uploadedFile?.previewUrl || null, uploadedFile?.file || null);
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ocr-result-${Date.now()}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to generate PDF:', err);
+      handleError('Failed to generate PDF');
+    }
+  };
+
   // --- Views ---
 
   if (viewMode === 'loading') {
@@ -537,6 +686,20 @@ const App: React.FC = () => {
              Clear
            </button>
            
+           <button
+             onClick={handleDownloadPdf}
+             disabled={isBatchMode ? !batchQueue.some(i => i.status === 'success') : processingState.status !== 'success'}
+             className={`
+               flex items-center gap-2 px-6 py-2 rounded font-medium text-sm transition-all
+               ${(isBatchMode ? batchQueue.some(i => i.status === 'success') : processingState.status === 'success') 
+                 ? 'bg-purple-600 text-white hover:bg-purple-500 shadow-[0_0_15px_rgba(147,51,234,0.3)]' 
+                 : 'bg-industrial-800 text-gray-500 cursor-not-allowed'}
+             `}
+           >
+             <FileText size={16} />
+             Download Textable PDF
+           </button>
+
            <button
              onClick={handleDownloadJson}
              disabled={isBatchMode ? !batchQueue.some(i => i.status === 'success') : processingState.status !== 'success'}

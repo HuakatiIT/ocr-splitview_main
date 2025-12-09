@@ -11,6 +11,7 @@ const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
 const nodemailer = require('nodemailer');
+const crypto = require('crypto');
 
 // Library สำหรับ API Gateway
 const multer = require('multer');       
@@ -118,6 +119,13 @@ const getApiKeys = () => {
 
 const saveApiKeys = (keys) => {
     fs.writeFileSync(KEYS_FILE, JSON.stringify(keys, null, 2));
+};
+
+const generateApiKey = (length = 22) => {
+    // base62-ish random string, prefixed with sk-
+    const bytes = crypto.randomBytes(Math.ceil(length * 0.75));
+    const raw = bytes.toString('base64').replace(/[^a-zA-Z0-9]/g, '');
+    return 'sk-' + raw.slice(0, length);
 };
 
 // Helper: เชื่อมต่อ Database
@@ -344,7 +352,7 @@ app.post('/api/keys/request', (req, res) => {
     const newKey = {
         id: `key-${Date.now()}`,
         userId,
-        key: 'sk-ocr-' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15),
+        key: generateApiKey(),
         status: 'pending', createdAt: new Date().toISOString(), expiresAt: null, usageLimit: null, usageCount: 0
     };
     cleanKeys.push(newKey);

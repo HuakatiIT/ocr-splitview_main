@@ -30,10 +30,9 @@ npm run dev
 ```
 
 ### Docker (ทดสอบเร็ว)
-มี Dockerfile แยก front/back
+#### วิธีที่ 1: ใช้ Pre-built images จาก Docker Hub (แนะนำ)
 ```
-# backend
-docker build -t ocr-backend:local -f backend/Dockerfile backend
+# backend - pull จาก Docker Hub
 docker run -d --name ocr-backend -p 3001:3001 \
   -e PORT=3001 \
   -e DB_PROVIDER=mysql \
@@ -43,7 +42,28 @@ docker run -d --name ocr-backend -p 3001:3001 \
   -e MYSQL_PASS= \
   -e MYSQL_DB=ocr_users_db \
   -e TYPHOON_API_KEY=your-key \
-  -v /tmp/ocr-data:/data \
+  -v ocr-data:/data \
+  n00n0i/ocr-backend:latest
+
+# frontend - pull จาก Docker Hub
+docker run -d --name ocr-frontend -p 8080:80 \
+  n00n0i/ocr-frontend:latest
+```
+
+#### วิธีที่ 2: Build locally
+```
+# backend
+docker build -t ocr-backend:local -f backend/Dockerfile .
+docker run -d --name ocr-backend -p 3001:3001 \
+  -e PORT=3001 \
+  -e DB_PROVIDER=mysql \
+  -e MYSQL_HOST=host.docker.internal \
+  -e MYSQL_PORT=3306 \
+  -e MYSQL_USER=root \
+  -e MYSQL_PASS= \
+  -e MYSQL_DB=ocr_users_db \
+  -e TYPHOON_API_KEY=your-key \
+  -v ocr-data:/data \
   ocr-backend:local
 
 # frontend (build-time API base ใช้ backend host:port)
@@ -97,13 +117,26 @@ curl -X POST http://localhost:3001/v1/ocr \
 
 ## Kubernetes (ตัวอย่างขั้นตอน)
 
-1. Build images  
-   - Backend: `docker build -t <registry>/ocr-backend:latest -f backend/Dockerfile backend`  
-   - Frontend: `docker build -t <registry>/ocr-frontend:latest -f Dockerfile.frontend --build-arg VITE_API_BASE_URL=http://ocr-backend:3001 .`
-2. Push images ขึ้น registry ที่ cluster ดึงได้
-3. ปรับค่าภายใน `k8s/backend.yaml` (ConfigMap/Secret/PVC) ให้ตรงกับ DB/Email/Typhoon ของคุณ
-4. Deploy: `kubectl apply -f k8s/backend.yaml -f k8s/frontend.yaml` (และ `k8s/ingress.yaml` ถ้ามี ingress controller)
-5. Backend เก็บไฟล์ state (db-config.json, api-keys.json) ใน mount `/data` ที่มาจาก PVC ชื่อ `ocr-backend-pvc`
-6. Frontend service: `ocr-frontend` (port 80), Backend service: `ocr-backend` (port 3001)
+1. **Images** (ดึงจาก Docker Hub - ไม่ต้อง build)
+   - Backend: `n00n0i/ocr-backend:latest`
+   - Frontend: `n00n0i/ocr-frontend:latest`
 
-> หมายเหตุ: ขณะนี้ image backend สร้างแบบ MySQL-only โดยใช้ `npm install --ignore-scripts` ทำให้ไม่ต้องมี Oracle Instant Client หากต้องใช้ Oracle ให้ติดตั้ง oracledb + Instant Client และเปิด provider=oracle
+2. ปรับค่าภายใน `k8s/backend.yaml` (ConfigMap/Secret/PVC) ให้ตรงกับ DB/Email/Typhoon ของคุณ
+
+3. Deploy:
+   ```
+   kubectl apply -f k8s/namespace.yaml
+   kubectl apply -f k8s/backend.yaml -f k8s/frontend.yaml
+   kubectl apply -f k8s/ingress.yaml   # ถ้ามี ingress controller
+   ```
+
+4. **Architecture**:
+   - Backend service: `ocr-backend` (port 3001), mounts `/data` PVC (`ocr-backend-pvc`)
+   - Frontend service: `ocr-frontend` (port 80), reverse proxies `/api` และ `/v1` ไป backend
+   - Ingress points ไป `ocr-frontend` (optional)
+
+5. **Persistent Data**:
+   - Backend state files (`db-config.json`, `api-keys.json`) เก็บใน `/data` mount
+   - PVC: `ocr-backend-pvc` (ปรับ size ใน backend.yaml ตามต้องการ)
+
+> **หมายเหตุ**: ขณะนี้ image backend สร้างแบบ MySQL-only (ใช้ `npm install --ignore-scripts`) ทำให้ไม่ต้องมี Oracle Instant Client หากต้องใช้ Oracle ให้ rebuild โดยติดตั้ง oracledb package และปรับ DB_PROVIDER=oracle ใน environment
