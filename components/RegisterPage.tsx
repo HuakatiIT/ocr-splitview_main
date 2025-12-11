@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { UserPlus, AlertCircle, ArrowLeft } from 'lucide-react';
 import { register } from '../services/authService';
 
@@ -13,10 +13,40 @@ const RegisterPage: React.FC<RegisterPageProps> = ({ onNavigateToLogin }) => {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [signupAllowed, setSignupAllowed] = useState(true);
+
+  useEffect(() => {
+    const loadConfig = async () => {
+      try {
+        const res = await fetch(`${import.meta.env.VITE_API_BASE_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001')}/api/config`);
+        if (res.ok) {
+          const cfg = await res.json();
+          if (cfg.allowSignup === false) {
+            setSignupAllowed(false);
+            setError('Signup is disabled. Please contact admin.');
+          }
+          localStorage.setItem('ocr_app_settings', JSON.stringify(cfg));
+          return;
+        }
+      } catch {}
+      try {
+        const saved = localStorage.getItem('ocr_app_settings');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed.allowSignup === false) {
+            setSignupAllowed(false);
+            setError('Signup is disabled. Please contact admin.');
+          }
+        }
+      } catch {}
+    };
+    loadConfig();
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    if (!signupAllowed) return;
     setIsLoading(true);
 
     try {
@@ -31,6 +61,28 @@ const RegisterPage: React.FC<RegisterPageProps> = ({ onNavigateToLogin }) => {
       setIsLoading(false);
     }
   };
+
+  if (!signupAllowed) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-industrial-950 px-4">
+        <div className="w-full max-w-md bg-industrial-900 border border-industrial-800 rounded-xl shadow-2xl p-8 text-center">
+          <div className="w-16 h-16 bg-yellow-500/10 rounded-full flex items-center justify-center mx-auto mb-4">
+            <AlertCircle className="text-yellow-400" size={32} />
+          </div>
+          <h2 className="text-2xl font-bold text-gray-100 mb-2">Signup Disabled</h2>
+          <p className="text-gray-400 mb-6">
+            New account registration is currently disabled. Please contact the administrator.
+          </p>
+          <button
+            onClick={onNavigateToLogin}
+            className="px-6 py-2 bg-industrial-800 hover:bg-industrial-700 text-white rounded-lg transition-colors"
+          >
+            Return to Login
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (success) {
     return (

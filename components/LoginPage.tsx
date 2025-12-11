@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { LogIn, AlertCircle, ScanLine, XCircle, ShieldAlert, ArrowLeft, CheckCircle2, Key } from 'lucide-react';
 import { login, requestPasswordReset, resetPassword } from '../services/authService';
 import { User } from '../types';
@@ -10,7 +10,11 @@ interface LoginPageProps {
 
 type LoginView = 'login' | 'forgot' | 'reset';
 
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001');
+const API_URL = `${BASE_URL}/api`;
+
 const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess, onNavigateToRegister }) => {
+  const [allowSignup, setAllowSignup] = useState(true);
   const [view, setView] = useState<LoginView>('login');
   
   const [email, setEmail] = useState('');
@@ -23,6 +27,28 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess, onNavigateToRegis
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    const loadConfig = async () => {
+      try {
+        const res = await fetch(`${API_URL}/config`);
+        if (res.ok) {
+          const cfg = await res.json();
+          setAllowSignup(cfg.allowSignup !== false);
+          localStorage.setItem('ocr_app_settings', JSON.stringify(cfg));
+          return;
+        }
+      } catch {}
+      try {
+        const saved = localStorage.getItem('ocr_app_settings');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          setAllowSignup(parsed.allowSignup !== false);
+        }
+      } catch {}
+    };
+    loadConfig();
+  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -184,9 +210,13 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess, onNavigateToRegis
         {/* Footer */}
         {view === 'login' && (
           <div className="mt-8 text-center pt-6 border-t border-industrial-800">
-            <p className="text-sm text-gray-500">
-              Don't have an account? <button onClick={onNavigateToRegister} className="text-blue-400 hover:text-blue-300 font-medium transition-colors hover:underline">Register here</button>
-            </p>
+            {allowSignup ? (
+              <p className="text-sm text-gray-500">
+                Don't have an account? <button onClick={onNavigateToRegister} className="text-blue-400 hover:text-blue-300 font-medium transition-colors hover:underline">Register here</button>
+              </p>
+            ) : (
+              <p className="text-sm text-gray-500">Signup is disabled. Please contact admin.</p>
+            )}
           </div>
         )}
       </div>

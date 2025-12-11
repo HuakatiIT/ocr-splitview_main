@@ -3,11 +3,10 @@ kind: Ingress
 metadata:
   name: ocr-app
   namespace: ocr
-  annotations:
-    kubernetes.io/ingress.class: nginx
 spec:
+  ingressClassName: nginx
   rules:
-  - host: ocr.example.com
+  - host: ocr.localtest.me
     http:
       paths:
       - path: /

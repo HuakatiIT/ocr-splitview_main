@@ -284,3 +284,37 @@ export const deleteUser = async (userId: string): Promise<void> => {
     if (!response.ok) throw new Error('Failed to delete user');
   }
 };
+
+export const resetUserPassword = async (userId: string, newPassword: string): Promise<void> => {
+  const mode = await getDbMode();
+  if (mode === 'local') {
+    const passwords = JSON.parse(localStorage.getItem(PASSWORDS_KEY) || '{}');
+    const users: User[] = JSON.parse(localStorage.getItem(USERS_KEY) || '[]');
+    const target = users.find(u => u.id === userId);
+    if (!target) throw new Error('User not found');
+    passwords[target.email] = newPassword;
+    localStorage.setItem(PASSWORDS_KEY, JSON.stringify(passwords));
+    return;
+  }
+
+  try {
+    const response = await fetch(`${API_URL}/users/${userId}/password`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: newPassword }),
+    });
+    if (!response.ok) {
+      let message = `Failed to reset password (HTTP ${response.status})`;
+      try {
+        const data = await response.json();
+        if (data?.error) message = data.error;
+      } catch {
+        const txt = await response.text().catch(() => '');
+        if (txt) message = txt;
+      }
+      throw new Error(message);
+    }
+  } catch (err: any) {
+    throw new Error(err?.message || 'Failed to reset password');
+  }
+};

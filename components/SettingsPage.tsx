@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Save, RotateCcw, Eye, EyeOff, Server, Sliders, Cpu, ArrowLeft, Database, Wifi, CheckCircle2, AlertCircle, HardDrive, FileText, Code2, Key, Copy, XCircle, Clock, Lock, Activity, Calendar, Hash, RefreshCw, AlertTriangle, X } from 'lucide-react';
+import { Save, RotateCcw, Eye, EyeOff, Server, Sliders, Cpu, ArrowLeft, Database, Wifi, CheckCircle2, AlertCircle, HardDrive, FileText, Code2, Key, Copy, XCircle, Clock, Lock, Activity, Calendar, Hash, RefreshCw, AlertTriangle, X, ToggleRight, ToggleLeft } from 'lucide-react';
 import { ApiKey } from '../types';
 import { getUserApiKey, requestApiKey } from '../services/apiKeyService';
 import { getCurrentUser } from '../services/authService';
@@ -30,6 +30,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     temperature: 0.1,
     topP: 0.6,
     repetitionPenalty: 1.1,
+    allowSignup: true,
     dbProvider: 'mysql' as DbProvider,
     mysqlHost: 'localhost',
     mysqlPort: 3306,

@@ -28,12 +28,19 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 // --- [Dynamic] Config Email Sender ---
 // ✅ 2. เปลี่ยนมาใช้ process.env
+// Support generic SMTP (e.g., MailDev) with Gmail fallback
+const smtpHost = process.env.SMTP_HOST || 'smtp.gmail.com';
+const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
+const smtpSecure = process.env.SMTP_SECURE === 'true' || smtpPort === 465;
+const smtpUser = process.env.SMTP_USER || process.env.MAIL_USER;
+const smtpPass = process.env.SMTP_PASS || process.env.MAIL_PASS;
+const useAuth = Boolean(smtpUser && smtpPass && !['maildev', 'maildev.default', 'maildev.default.svc.cluster.local'].includes(smtpHost));
+
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.MAIL_USER, 
-    pass: process.env.MAIL_PASS
-  }
+  host: smtpHost,
+  port: smtpPort,
+  secure: smtpSecure,
+  auth: useAuth ? { user: smtpUser, pass: smtpPass } : undefined
 });
 
 const MOCK_OCR = process.env.MOCK_OCR === 'true';
@@ -60,6 +67,7 @@ const resetTokens = {};
 const DEFAULT_CONFIG = {
     // Database Config
     dbProvider: process.env.DB_PROVIDER || 'mysql',
+    allowSignup: true,
     
     // MySQL
     mysqlHost: process.env.MYSQL_HOST || 'localhost',
@@ -85,6 +93,8 @@ const DEFAULT_CONFIG = {
     topP: 0.6,
     repetitionPenalty: 1.1
 };
+
+const CRAFT_URL = process.env.CRAFT_URL || 'http://craft-service:5000/detect';
 
 const getGlobalConfig = () => {
     // 1. เริ่มต้นด้วยค่าจาก .env (เป็นค่าตั้งต้น หรือ Factory Setting)
@@ -127,6 +137,23 @@ const generateApiKey = (length = 22) => {
     const raw = bytes.toString('base64').replace(/[^a-zA-Z0-9]/g, '');
     return 'sk-' + raw.slice(0, length);
 };
+
+// CRAFT detect proxy (expects craft service reachable at CRAFT_URL)
+app.post('/api/craft/detect', upload.single('file'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    try {
+        const formData = new FormData();
+        formData.append('file', req.file.buffer, {
+            filename: req.file.originalname || 'upload.png',
+            contentType: req.file.mimetype || 'application/octet-stream'
+        });
+        const response = await axios.post(CRAFT_URL, formData, { headers: formData.getHeaders(), timeout: 30000 });
+        res.json(response.data);
+    } catch (err) {
+        console.error('CRAFT proxy error:', err.response?.data || err.message);
+        res.status(500).json({ error: 'CRAFT detection failed', details: err.response?.data || err.message });
+    }
+});
 
 // Helper: เชื่อมต่อ Database
 const getConnection = async () => {
@@ -332,8 +359,15 @@ app.post('/api/reset-password', async (req, res) => {
 // Config APIs
 app.get('/api/config', (req, res) => res.json(getGlobalConfig()));
 app.post('/api/config', (req, res) => {
-    try { saveGlobalConfig(req.body); res.json({ message: 'Saved' }); } 
-    catch (e) { res.status(500).json({ error: 'Failed' }); }
+    try {
+        // merge with existing config so missing fields (e.g., allowSignup) are preserved instead of reset to defaults
+        const currentConfig = getGlobalConfig();
+        const nextConfig = { ...currentConfig, ...req.body };
+        saveGlobalConfig(nextConfig);
+        res.json({ message: 'Saved', config: nextConfig });
+    } catch (e) {
+        res.status(500).json({ error: 'Failed' });
+    }
 });
 
 // Keys Management APIs
@@ -422,6 +456,10 @@ app.post('/api/login', async (req, res) => {
 
 app.post('/api/register', async (req, res) => {
     const { email, password, name } = req.body;
+    const cfg = getGlobalConfig();
+    if (cfg.allowSignup === false) {
+        return res.status(403).json({ message: 'Signup is disabled by admin' });
+    }
     let db = null;
     try {
         db = await getConnection();
@@ -461,6 +499,23 @@ app.put('/api/users/:id/status', async (req, res) => {
         if (db.type === 'mysql') await db.conn.query('UPDATE users SET status = ? WHERE id = ?', [status, id]);
         else await db.conn.execute('UPDATE users SET status = :1 WHERE id = :2', [status, id]);
         res.json({ message: 'Updated' });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+    finally { if(db) (db.type === 'oracle' ? await db.conn.close() : db.conn.end()); }
+});
+
+// Admin reset password (no token needed)
+app.put('/api/users/:id/password', async (req, res) => {
+    const { password } = req.body;
+    const { id } = req.params;
+    if (!password || String(password).length < 4) {
+        return res.status(400).json({ error: 'Password is required (min 4 chars)' });
+    }
+    let db = null;
+    try {
+        db = await getConnection();
+        if (db.type === 'mysql') await db.conn.query('UPDATE users SET password = ? WHERE id = ?', [password, id]);
+        else await db.conn.execute('UPDATE users SET password = :1 WHERE id = :2', [password, id]);
+        res.json({ message: 'Password reset' });
     } catch (err) { res.status(500).json({ error: err.message }); }
     finally { if(db) (db.type === 'oracle' ? await db.conn.close() : db.conn.end()); }
 });

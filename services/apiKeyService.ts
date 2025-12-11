@@ -22,7 +22,7 @@ const getDbMode = async (): Promise<'local' | 'server'> => {
 // System Config (เก็บ Local เสมอ เพื่อความง่าย)
 export const getSystemConfig = (): SystemConfig => {
   const stored = localStorage.getItem(SYSTEM_CONFIG_KEY);
-  return stored ? JSON.parse(stored) : { autoApproveApiKeys: false };
+  return stored ? JSON.parse(stored) : { autoApproveApiKeys: false, allowSignup: true };
 };
 
 export const setSystemConfig = (config: SystemConfig): void => {
