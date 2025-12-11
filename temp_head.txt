@@ -1,0 +1,200 @@
+// ✅ 1. เพิ่มบรรทัดนี้บนสุด เพื่อโหลดค่าจาก .env
+require('dotenv').config();
+
+const express = require('express');
+const mysql = require('mysql2');
+let oracledb = null;
+try { oracledb = require('oracledb'); } 
+catch (err) { console.log('Oracle driver not installed; Oracle mode disabled'); }
+const cors = require('cors');
+const bodyParser = require('body-parser');
+const fs = require('fs');
+const path = require('path');
+const nodemailer = require('nodemailer');
+const crypto = require('crypto');
+
+// Library สำหรับ API Gateway
+const multer = require('multer');       
+const axios = require('axios');         
+const FormData = require('form-data');  
+
+const app = express();
+
+app.use(cors());
+app.use(bodyParser.json());
+
+// ตั้งค่า Multer
+const upload = multer({ storage: multer.memoryStorage() });
+
+// --- [Dynamic] Config Email Sender ---
+// ✅ 2. เปลี่ยนมาใช้ process.env
+// Support generic SMTP (e.g., MailDev) with Gmail fallback
+const smtpHost = process.env.SMTP_HOST || 'smtp.gmail.com';
+const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
+const smtpSecure = process.env.SMTP_SECURE === 'true' || smtpPort === 465;
+const smtpUser = process.env.SMTP_USER || process.env.MAIL_USER;
+const smtpPass = process.env.SMTP_PASS || process.env.MAIL_PASS;
+const useAuth = Boolean(smtpUser && smtpPass && !['maildev', 'maildev.default', 'maildev.default.svc.cluster.local'].includes(smtpHost));
+
+const transporter = nodemailer.createTransport({
+  host: smtpHost,
+  port: smtpPort,
+  secure: smtpSecure,
+  auth: useAuth ? { user: smtpUser, pass: smtpPass } : undefined
+});
+
+const MOCK_OCR = process.env.MOCK_OCR === 'true';
+
+// Oracle Thin Mode
+if (oracledb) {
+  try { oracledb.initOracleClient({ libDir: process.env.ORACLE_LIB_DIR }); } 
+  catch (err) { console.log('Oracle Thin Mode Active'); }
+  oracledb.autoCommit = true;
+}
+
+// --- Config & Keys ---
+// DATA_DIR จะใช้สำหรับเก็บไฟล์ state (config/keys) เพื่อให้ mount volume ได้บน container/K8s
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+const CONFIG_FILE = path.join(DATA_DIR, 'db-config.json');
+const KEYS_FILE = path.join(DATA_DIR, 'api-keys.json');
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+const resetTokens = {}; 
+
+// --- [Dynamic] Default Config ---
+// ✅ 3. เปลี่ยนค่า Hardcode ทั้งหมดเป็น process.env
+const DEFAULT_CONFIG = {
+    // Database Config
+    dbProvider: process.env.DB_PROVIDER || 'mysql',
+    allowSignup: true,
+    
+    // MySQL
+    mysqlHost: process.env.MYSQL_HOST || 'localhost',
+    mysqlPort: parseInt(process.env.MYSQL_PORT || '3306'),
+    mysqlUser: process.env.MYSQL_USER || 'root',
+    mysqlPassword: process.env.MYSQL_PASS || '', // ถ้าไม่มีใน env ให้เป็นค่าว่าง
+    mysqlDatabase: process.env.MYSQL_DB || 'ocr_users_db',
+    
+    // Oracle
+    oracleHost: process.env.ORACLE_HOST || 'localhost',
+    oraclePort: parseInt(process.env.ORACLE_PORT || '1521'),
+    oracleUser: process.env.ORACLE_USER || 'SYSTEM',
+    oraclePassword: process.env.ORACLE_PASS || '',
+    oracleServiceName: process.env.ORACLE_SERVICE || 'FREEPDB1',
+    
+    // AI Config (Typhoon)
+    apiKey: process.env.TYPHOON_API_KEY || '', // Key ของบริษัท
+    baseUrl: process.env.TYPHOON_BASE_URL || 'https://api.opentyphoon.ai/v1',
+    model: 'typhoon-ocr',
+    taskType: 'default',
+    maxTokens: 16000,
+    temperature: 0.1,
+    topP: 0.6,
+    repetitionPenalty: 1.1
+};
+
+const CRAFT_URL = process.env.CRAFT_URL || 'http://craft-service:5000/detect';
+
+const getGlobalConfig = () => {
+    // 1. เริ่มต้นด้วยค่าจาก .env (เป็นค่าตั้งต้น หรือ Factory Setting)
+    let finalConfig = { ...DEFAULT_CONFIG };
+
+    // 2. เช็คว่า Admin เคยกด Save หรือยัง? (มีไฟล์ db-config.json ไหม?)
+    if (fs.existsSync(CONFIG_FILE)) {
+        try { 
+            const fileConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+            
+            // 🔥 ให้ค่าจากไฟล์ที่ Admin Save "ทับ" ค่าจาก .env ไปเลย
+            // Admin อยากแก้อะไร หน้าเว็บต้องมีผลที่สุด
+            finalConfig = { ...finalConfig, ...fileConfig }; 
+        } catch (e) {
+            console.error("Error reading config file:", e);
+        }
+    }
+
+    return finalConfig;
+};
+
+const saveGlobalConfig = (newConfig) => {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2));
+};
+
+const getApiKeys = () => {
+    if (fs.existsSync(KEYS_FILE)) {
+        try { return JSON.parse(fs.readFileSync(KEYS_FILE, 'utf8')); } catch (e) { return []; }
+    }
+    return [];
+};
+
+const saveApiKeys = (keys) => {
+    fs.writeFileSync(KEYS_FILE, JSON.stringify(keys, null, 2));
+};
+
+const generateApiKey = (length = 22) => {
+    // base62-ish random string, prefixed with sk-
+    const bytes = crypto.randomBytes(Math.ceil(length * 0.75));
+    const raw = bytes.toString('base64').replace(/[^a-zA-Z0-9]/g, '');
+    return 'sk-' + raw.slice(0, length);
+};
+
+// Minimal PDF generator (single-page, text-only, searchable)
+const generateSimplePdfBuffer = (text) => {
+    const sanitize = (str) => String(str || '').replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+    const lines = sanitize(text).split(/\r?\n/).slice(0, 200); // cap lines to keep PDF small
+    const contentLines = [];
+    let y = 760;
+    const leading = 14;
+    lines.forEach(line => {
+        if (y < 40) return; // single-page guard
+        contentLines.push(`BT /F1 12 Tf 40 ${y} Td (${line}) Tj ET`);
+        y -= leading;
+    });
+    const contentStream = contentLines.join('\n') || 'BT /F1 12 Tf 40 760 Td (No OCR text) Tj ET';
+    const contentLength = Buffer.byteLength(contentStream, 'utf8');
+
+    const objects = [];
+    objects.push('1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj');
+    objects.push('2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj');
+    objects.push('3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj');
+    objects.push(`4 0 obj << /Length ${contentLength} >> stream\n${contentStream}\nendstream endobj`);
+    objects.push('5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj');
+
+    let pdf = '%PDF-1.4\n';
+    const offsets = [];
+    objects.forEach(obj => {
+        offsets.push(Buffer.byteLength(pdf, 'utf8'));
+        pdf += obj + '\n';
+    });
+    const xrefStart = Buffer.byteLength(pdf, 'utf8');
+    pdf += 'xref\n';
+    pdf += `0 ${objects.length + 1}\n`;
+    pdf += '0000000000 65535 f \n';
+    offsets.forEach(off => {
+        pdf += String(off).padStart(10, '0') + ' 00000 n \n';
+    });
+    pdf += `trailer << /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+    return Buffer.from(pdf, 'utf8');
+};
+
+// CRAFT detect proxy (expects craft service reachable at CRAFT_URL)
+app.post('/api/craft/detect', upload.single('file'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    try {
+        const formData = new FormData();
+        formData.append('file', req.file.buffer, {
+            filename: req.file.originalname || 'upload.png',
+            contentType: req.file.mimetype || 'application/octet-stream'
+        });
+        const response = await axios.post(CRAFT_URL, formData, { headers: formData.getHeaders(), timeout: 30000 });
+        res.json(response.data);
+    } catch (err) {
+        console.error('CRAFT proxy error:', err.response?.data || err.message);
+        res.status(500).json({ error: 'CRAFT detection failed', details: err.response?.data || err.message });
+    }
+});
+
+// Helper: เชื่อมต่อ Database
+const getConnection = async () => {
+    const settings = getGlobalConfig();
+    const provider = settings.dbProvider || 'mysql';

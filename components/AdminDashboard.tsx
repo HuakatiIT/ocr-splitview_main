@@ -13,7 +13,7 @@ type DashboardTab = 'users' | 'api-keys';
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001');
 const API_URL = `${BASE_URL}/api`;
 const MAILDEV_URL = import.meta.env.VITE_MAILDEV_URL || 'http://maildev.localtest.me';
-const DESIGN_URL = import.meta.env.VITE_DESIGN_URL || '#';
+const DESIGN_URL = import.meta.env.VITE_DESIGN_URL || '/design.html';
 
 const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   const [users, setUsers] = useState<UserWithKey[]>([]);
@@ -370,16 +370,15 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
             <div><h1 className="text-2xl font-bold text-gray-100">Admin Dashboard</h1><p className="text-sm text-gray-500 mt-1">Manage user access and API keys</p></div>
           </div>
           <div className="flex items-center gap-2">
-            {DESIGN_URL && (
-              <a
-                href={DESIGN_URL}
-                target="_blank"
-                rel="noreferrer"
-                className="px-3 py-1.5 text-sm rounded-lg border border-industrial-700 text-gray-300 hover:text-white hover:border-purple-500 hover:bg-industrial-800 transition-colors"
-              >
-                Design Sheet
-              </a>
-            )}
+            <a
+              href={DESIGN_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="px-3 py-1.5 text-sm rounded-lg border transition-colors border-industrial-700 text-gray-300 hover:text-white hover:border-purple-500 hover:bg-industrial-800"
+              title="Open Design System"
+            >
+              Design System
+            </a>
             {MAILDEV_URL && (
               <a
                 href={MAILDEV_URL}

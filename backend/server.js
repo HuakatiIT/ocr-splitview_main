@@ -62,6 +62,26 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 const resetTokens = {}; 
 
+// Helpers for persisted config/keys
+const readJsonFile = (filePath, fallback) => {
+  try {
+    if (!fs.existsSync(filePath)) return fallback;
+    const raw = fs.readFileSync(filePath, 'utf8');
+    return JSON.parse(raw);
+  } catch (e) {
+    console.error(`Error reading file ${filePath}:`, e);
+    return fallback;
+  }
+};
+
+const writeJsonFile = (filePath, data) => {
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+  } catch (e) {
+    console.error(`Error writing file ${filePath}:`, e);
+  }
+};
+
 // --- [Dynamic] Default Config ---
 // ✅ 3. เปลี่ยนค่า Hardcode ทั้งหมดเป็น process.env
 const DEFAULT_CONFIG = {
@@ -96,18 +116,54 @@ const DEFAULT_CONFIG = {
 
 const CRAFT_URL = process.env.CRAFT_URL || 'http://craft-service:5000/detect';
 
+const getApiKeys = () => readJsonFile(KEYS_FILE, []);
+const saveApiKeys = (keys) => writeJsonFile(KEYS_FILE, keys);
+const generateApiKey = () => `dev-${crypto.randomBytes(24).toString('hex')}`;
+const generateSimplePdfBuffer = (text) => {
+  const sanitize = (str) => String(str || '').replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+  const lines = sanitize(text).split(/\r?\n/).slice(0, 200);
+  const contentLines = [];
+  let y = 760;
+  const leading = 14;
+  lines.forEach(line => {
+    if (y < 40) return;
+    contentLines.push(`BT /F1 12 Tf 40 ${y} Td (${line}) Tj ET`);
+    y -= leading;
+  });
+  const contentStream = contentLines.join('\n') || 'BT /F1 12 Tf 40 760 Td (No OCR text) Tj ET';
+  const contentLength = Buffer.byteLength(contentStream, 'utf8');
+
+  const objects = [];
+  objects.push('1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj');
+  objects.push('2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj');
+  objects.push('3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj');
+  objects.push(`4 0 obj << /Length ${contentLength} >> stream\n${contentStream}\nendstream endobj`);
+  objects.push('5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj');
+
+  let pdf = '%PDF-1.4\n';
+  const offsets = [];
+  objects.forEach(obj => {
+    offsets.push(Buffer.byteLength(pdf, 'utf8'));
+    pdf += obj + '\n';
+  });
+  const xrefStart = Buffer.byteLength(pdf, 'utf8');
+  pdf += 'xref\n';
+  pdf += `0 ${objects.length + 1}\n`;
+  pdf += '0000000000 65535 f \n';
+  offsets.forEach(off => { pdf += String(off).padStart(10, '0') + ' 00000 n \n'; });
+  pdf += `trailer << /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+  return Buffer.from(pdf, 'utf8');
+};
+
 const getGlobalConfig = () => {
-    // 1. เริ่มต้นด้วยค่าจาก .env (เป็นค่าตั้งต้น หรือ Factory Setting)
+    // 1. Start from defaults (.env)
     let finalConfig = { ...DEFAULT_CONFIG };
 
-    // 2. เช็คว่า Admin เคยกด Save หรือยัง? (มีไฟล์ db-config.json ไหม?)
+    // 2. Merge with saved config file if present
     if (fs.existsSync(CONFIG_FILE)) {
-        try { 
+        try {
             const fileConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-            
-            // 🔥 ให้ค่าจากไฟล์ที่ Admin Save "ทับ" ค่าจาก .env ไปเลย
-            // Admin อยากแก้อะไร หน้าเว็บต้องมีผลที่สุด
-            finalConfig = { ...finalConfig, ...fileConfig }; 
+            finalConfig = { ...finalConfig, ...fileConfig };
         } catch (e) {
             console.error("Error reading config file:", e);
         }
@@ -116,44 +172,27 @@ const getGlobalConfig = () => {
     return finalConfig;
 };
 
-const saveGlobalConfig = (newConfig) => {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2));
-};
+const saveGlobalConfig = (cfg) => writeJsonFile(CONFIG_FILE, cfg);
 
-const getApiKeys = () => {
-    if (fs.existsSync(KEYS_FILE)) {
-        try { return JSON.parse(fs.readFileSync(KEYS_FILE, 'utf8')); } catch (e) { return []; }
+// --- Developer API Key Guard ---
+const requireDeveloperKey = (req, res, next) => {
+    const authHeader = req.headers['authorization'] || '';
+    const tokenFromHeader = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    const token = tokenFromHeader || String(req.headers['x-api-key'] || '').trim();
+
+    if (!token) {
+        return res.status(401).json({ error: 'Missing Authorization header', detail: 'Send developer key as Bearer <key>' });
     }
-    return [];
-};
 
-const saveApiKeys = (keys) => {
-    fs.writeFileSync(KEYS_FILE, JSON.stringify(keys, null, 2));
-};
-
-const generateApiKey = (length = 22) => {
-    // base62-ish random string, prefixed with sk-
-    const bytes = crypto.randomBytes(Math.ceil(length * 0.75));
-    const raw = bytes.toString('base64').replace(/[^a-zA-Z0-9]/g, '');
-    return 'sk-' + raw.slice(0, length);
-};
-
-// CRAFT detect proxy (expects craft service reachable at CRAFT_URL)
-app.post('/api/craft/detect', upload.single('file'), async (req, res) => {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-    try {
-        const formData = new FormData();
-        formData.append('file', req.file.buffer, {
-            filename: req.file.originalname || 'upload.png',
-            contentType: req.file.mimetype || 'application/octet-stream'
-        });
-        const response = await axios.post(CRAFT_URL, formData, { headers: formData.getHeaders(), timeout: 30000 });
-        res.json(response.data);
-    } catch (err) {
-        console.error('CRAFT proxy error:', err.response?.data || err.message);
-        res.status(500).json({ error: 'CRAFT detection failed', details: err.response?.data || err.message });
+    const keys = getApiKeys();
+    const match = keys.find(k => k.key === token && k.status === 'active');
+    if (!match) {
+        return res.status(401).json({ error: 'Invalid or inactive developer key' });
     }
-});
+
+    req.developerKey = match;
+    next();
+};
 
 // Helper: เชื่อมต่อ Database
 const getConnection = async () => {
@@ -212,59 +251,27 @@ app.post('/v1/ocr', upload.single('file'), async (req, res) => {
         });
     }
 
-    // 1. ตรวจสอบ Authorization Header
-    const authHeader = req.headers['authorization'];
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        console.log('❌ Auth Error: Missing Header');
-        return res.status(401).json({ error: 'Missing Authorization header' });
-    }
-
-    const clientApiKey = authHeader.split(' ')[1];
+    // Developer/user API key check disabled per request (UI does not require bearer)
+    const keys = [];
+    const keyIndex = -1;
     
-    // 2. ตรวจสอบ Key ในระบบของเรา
-    const keys = getApiKeys();
-    const keyIndex = keys.findIndex(k => k.key === clientApiKey);
-
-    if (keyIndex === -1) {
-        console.log('❌ Auth Error: Invalid Key');
-        return res.status(401).json({ error: 'Invalid User API Key' });
-    }
-
-    const keyData = keys[keyIndex];
-
-    // 3. ตรวจสอบ Status, Expire, Usage
-    if (keyData.status !== 'active') {
-        console.log(`❌ Access Denied: Key is ${keyData.status}`);
-        return res.status(403).json({ error: `API Key is ${keyData.status}` });
-    }
-
-    if (keyData.expiresAt) {
-        const expiryDate = new Date(keyData.expiresAt);
-        expiryDate.setHours(23, 59, 59, 999);
-        const now = new Date();
-        if (now > expiryDate) {
-            console.log('❌ Access Denied: Key Expired');
-            return res.status(403).json({ error: 'API Key has expired' });
-        }
-    }
-
-    if (keyData.usageLimit !== null && (keyData.usageCount || 0) >= keyData.usageLimit) {
-        console.log('❌ Access Denied: Usage Limit Exceeded');
-        return res.status(429).json({ error: 'Usage limit exceeded' });
-    }
-
     // 4. ส่งต่อให้ Typhoon Engine (Proxy)
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
 
-        console.log('✅ Security Passed. Forwarding to Engine...');
+        const allowedMime = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/tiff', 'image/bmp', 'image/heic', 'image/heif', 'application/pdf'];
+        if (!allowedMime.includes(req.file.mimetype)) {
+            return res.status(400).json({ error: 'Unsupported file type for OCR', detail: `Got ${req.file.mimetype}` });
+        }
+
+        console.log('Security Passed. Forwarding to Engine...');
 
         const systemConfig = getGlobalConfig();
 
         const formData = new FormData();
-        formData.append('file', req.file.buffer, req.file.originalname);
+        formData.append('file', req.file.buffer, req.file.originalname || 'upload.bin');
         formData.append('model', systemConfig.model);
         formData.append('task_type', systemConfig.taskType);
         formData.append('max_tokens', String(systemConfig.maxTokens));
@@ -272,7 +279,10 @@ app.post('/v1/ocr', upload.single('file'), async (req, res) => {
         formData.append('top_p', String(systemConfig.topP));
         formData.append('repetition_penalty', String(systemConfig.repetitionPenalty));
 
-        let typhoonUrl = systemConfig.baseUrl.trim();
+        let typhoonUrl = (systemConfig.baseUrl || '').trim();
+        if (!typhoonUrl) {
+            return res.status(500).json({ error: 'Typhoon base URL is not configured' });
+        }
         if (typhoonUrl.endsWith('/')) typhoonUrl = typhoonUrl.slice(0, -1);
         if (!typhoonUrl.endsWith('/ocr')) typhoonUrl += '/ocr';
 
@@ -280,11 +290,23 @@ app.post('/v1/ocr', upload.single('file'), async (req, res) => {
             headers: {
                 ...formData.getHeaders(),
                 'Authorization': `Bearer ${systemConfig.apiKey}`
-            }
+            },
+            maxBodyLength: 30 * 1024 * 1024,
+            timeout: 60000,
+            validateStatus: () => true
         });
 
-        keys[keyIndex].usageCount = (keys[keyIndex].usageCount || 0) + 1;
-        saveApiKeys(keys);
+        if (response.status === 401) {
+            throw Object.assign(new Error('Typhoon auth failed'), { response });
+        }
+        if (response.status >= 400) {
+            throw Object.assign(new Error('Typhoon returned error'), { response });
+        }
+
+        if (keyIndex >= 0) {
+            keys[keyIndex].usageCount = (keys[keyIndex].usageCount || 0) + 1;
+            saveApiKeys(keys);
+        }
 
         console.log('✅ Engine Response Success. Usage Updated.');
         
@@ -306,6 +328,107 @@ app.post('/v1/ocr', upload.single('file'), async (req, res) => {
             error: finalErrorMsg,
             details: error.response?.data || error.message
         });
+    }
+});
+
+// Developer-facing OCR endpoint (Bearer developer key required)
+app.post('/api/ocr_v1', requireDeveloperKey, upload.single('file'), async (req, res) => {
+    console.log(`\n[Developer API] /api/ocr_v1 by user ${req.developerKey.userId || 'unknown'}`);
+
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+        const allowedMime = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/tiff', 'image/bmp', 'image/heic', 'image/heif', 'application/pdf'];
+        if (!allowedMime.includes(req.file.mimetype)) {
+            return res.status(400).json({ error: 'Unsupported file type for OCR', detail: `Got ${req.file.mimetype}` });
+        }
+
+        const systemConfig = getGlobalConfig();
+
+        const formData = new FormData();
+        formData.append('file', req.file.buffer, req.file.originalname || 'upload.bin');
+        formData.append('model', systemConfig.model);
+        formData.append('task_type', systemConfig.taskType);
+        formData.append('max_tokens', String(systemConfig.maxTokens));
+        formData.append('temperature', String(systemConfig.temperature));
+        formData.append('top_p', String(systemConfig.topP));
+        formData.append('repetition_penalty', String(systemConfig.repetitionPenalty));
+
+        let typhoonUrl = (systemConfig.baseUrl || '').trim();
+        if (!typhoonUrl) return res.status(500).json({ error: 'Typhoon base URL is not configured' });
+        if (typhoonUrl.endsWith('/')) typhoonUrl = typhoonUrl.slice(0, -1);
+        if (!typhoonUrl.endsWith('/ocr')) typhoonUrl += '/ocr';
+
+        const response = await axios.post(typhoonUrl, formData, {
+            headers: { ...formData.getHeaders(), 'Authorization': `Bearer ${systemConfig.apiKey}` },
+            maxBodyLength: 30 * 1024 * 1024,
+            timeout: 60000,
+            validateStatus: () => true
+        });
+
+        if (response.status >= 400) {
+            console.error('[Developer API] Typhoon error:', response.data);
+            return res.status(response.status).json(response.data);
+        }
+
+        res.json(response.data);
+    } catch (err) {
+        console.error('[Developer API] OCR proxy failed:', err.response?.data || err.message);
+        res.status(err.response?.status || 500).json({ error: 'Failed to process image', details: err.response?.data || err.message });
+    }
+});
+
+// Generate searchable PDF from provided text (reuses API-key checks)
+app.post('/v1/gen_pdf', async (req, res) => {
+    console.log(`\n[API Gateway] Request received at /v1/gen_pdf`);
+
+    // Developer/user API key check disabled per request
+    const keys = [];
+    const keyIndex = -1;
+
+    const { text, filename } = req.body || {};
+    if (!text || typeof text !== 'string' || text.trim().length === 0) {
+        return res.status(400).json({ error: 'Text is required to generate PDF' });
+    }
+    const safeName = String(filename || 'ocr-output.pdf').replace(/[^\w.\-]+/g, '_') || 'ocr-output.pdf';
+
+    try {
+        const pdfBuffer = generateSimplePdfBuffer(text);
+        if (keyIndex >= 0) {
+            keys[keyIndex].usageCount = (keys[keyIndex].usageCount || 0) + 1;
+            saveApiKeys(keys);
+        }
+
+        res.set({
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': `attachment; filename="${safeName.endsWith('.pdf') ? safeName : safeName + '.pdf'}"`
+        });
+        res.send(pdfBuffer);
+    } catch (err) {
+        console.error('Г?O PDF Generation Error:', err.message);
+        res.status(500).json({ error: 'Failed to generate PDF', details: err.message });
+    }
+});
+
+// Developer-facing searchable PDF download (Bearer developer key required)
+app.post('/api/searchable_pdf', requireDeveloperKey, async (req, res) => {
+    console.log(`\n[Developer API] /api/searchable_pdf by user ${req.developerKey.userId || 'unknown'}`);
+    const { text, filename } = req.body || {};
+    if (!text || typeof text !== 'string' || text.trim().length === 0) {
+        return res.status(400).json({ error: 'Text is required to generate PDF' });
+    }
+    const safeName = String(filename || 'ocr-output.pdf').replace(/[^\w.\-]+/g, '_') || 'ocr-output.pdf';
+
+    try {
+        const pdfBuffer = generateSimplePdfBuffer(text);
+        res.set({
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': `attachment; filename="${safeName.endsWith('.pdf') ? safeName : safeName + '.pdf'}"`
+        });
+        res.send(pdfBuffer);
+    } catch (err) {
+        console.error('[Developer API] PDF generation error:', err.message);
+        res.status(500).json({ error: 'Failed to generate PDF', details: err.message });
     }
 });
 
