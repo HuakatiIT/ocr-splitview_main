@@ -332,7 +332,7 @@ const App: React.FC = () => {
       metadata?: { sourceName?: string; generatedAt?: string };
     }
   ) => {
-    const safeText = typeof rawText === 'string' ? rawText : JSON.stringify(rawText ?? '', 2);
+    const safeText = typeof rawText === 'string' ? rawText : JSON.stringify(rawText ?? '', null, 2);
     const pdfDoc = await PDFDocument.create();
     pdfDoc.registerFontkit(fontkit);
     let font = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -511,7 +511,7 @@ const App: React.FC = () => {
     const img = await loadImageElement(src);
     const imageSize = { width: img.naturalWidth || img.width, height: img.naturalHeight || img.height };
     const { data } = await Tesseract.recognize(src, 'eng+tha');
-    const wordBoxes = (data.words || [])
+    const wordBoxes = (((data as any)?.words) || [])
       .filter(w => (w.text || '').trim())
       .map(w => ({
         text: w.text.trim(),

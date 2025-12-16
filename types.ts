@@ -71,4 +71,16 @@ export interface ApiKeyRequestParams {
 
 export interface SystemConfig {
   autoApproveApiKeys: boolean;
+  allowSignup?: boolean;
+  dbProvider?: 'mysql' | 'oracle';
+  mysqlHost?: string;
+  mysqlPort?: number;
+  mysqlUser?: string;
+  mysqlPassword?: string;
+  mysqlDatabase?: string;
+  oracleHost?: string;
+  oraclePort?: number;
+  oracleUser?: string;
+  oraclePassword?: string;
+  oracleServiceName?: string;
 }

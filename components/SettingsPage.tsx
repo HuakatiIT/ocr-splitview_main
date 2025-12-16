@@ -14,7 +14,8 @@ type DbProvider = 'mysql' | 'oracle';
 const SETTINGS_KEY = 'ocr_app_settings';
 
 // 🔥 แก้ไขจุดที่ 1: ใช้ Base URL จาก .env (ถ้าไม่มีให้ใช้ localhost)
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+// Use explicit API base if provided; otherwise fall back to current origin (works behind ingress/nodeport)
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001');
 const API_URL = `${BASE_URL}/api`; // ต่อท้ายด้วย /api สำหรับเรียก Backend ปกติ
 
 const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
