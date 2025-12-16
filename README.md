@@ -71,20 +71,15 @@ docker build -t ocr-frontend:local -f Dockerfile.frontend --build-arg VITE_API_B
 docker run -d --name ocr-frontend -p 8080:80 ocr-frontend:local
 ```
 
-### K8s (ตัวอย่าง)
-ไฟล์อยู่ใน `k8s/`:
-- `k8s/backend.yaml` (ConfigMap/Secret/PVC + Deployment/Service)
-- `k8s/frontend.yaml` (Deployment/Service)
-- `k8s/ingress.yaml` (ปรับ host เอง)
-- `k8s/namespace.yaml`
+### Kubernetes deployment
 
-ขั้นตอน:
-```
-kubectl apply -f k8s/namespace.yaml
-# ปรับค่าจริงใน backend.yaml (ConfigMap/Secret/image tag) แล้ว:
-kubectl apply -f k8s/backend.yaml -f k8s/frontend.yaml
-kubectl apply -f k8s/ingress.yaml   # ถ้าใช้ ingress controller
-```
+- Docker Desktop: `kubectl apply -f k8s/docker-desktop.yaml` (ingress host `ocr-dd.localtest.me`, or use the NodePort on `ocr-frontend` service)
+- Other clusters:
+  - Use `k8s/production.yaml` (namespace + PVCs + MySQL + Maildev + Backend + Frontend + Ingress in one file)
+  - Replace images `your-registry/ocr-backend:latest` and `your-registry/ocr-frontend:latest` with your pushed tags
+  - Adjust ingress host/class, storageClass, secrets (Typhoon key, DB/SMTP passwords) as needed
+  - Apply: `kubectl apply -f k8s/production.yaml`
+- Live backup of the currently running Docker Desktop stack: `k8s/live-backup.yaml` (edit secrets/hosts/storageClass before applying elsewhere).
 
 ### Database
 - MySQL แนะนำ ใช้สคริปต์สร้างตาราง:
