@@ -3,6 +3,8 @@ kind: Ingress
 metadata:
   name: ocr-app
   namespace: ocr
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "20m"
 spec:
   ingressClassName: nginx
   rules:

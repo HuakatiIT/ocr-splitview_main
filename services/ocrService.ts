@@ -32,13 +32,15 @@ export const processImage = async (
 
     if (!response.ok) {
       let errorMsg = `API Error ${response.status}`;
-      try {
-        const errorData = await response.json();
-        if (errorData.error) errorMsg = errorData.error;
-        if (errorData.message) errorMsg += `: ${errorData.message}`;
-      } catch {
-        const text = await response.text();
-        if (text) errorMsg = text;
+      const errorText = await response.text();
+      if (errorText) {
+        try {
+          const errorData = JSON.parse(errorText);
+          if (errorData.error) errorMsg = errorData.error;
+          if (errorData.message) errorMsg += `: ${errorData.message}`;
+        } catch {
+          errorMsg = errorText;
+        }
       }
       throw new Error(errorMsg);
     }

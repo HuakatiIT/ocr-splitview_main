@@ -104,12 +104,15 @@ export const resetUserPassword = async (userId: string, newPassword: string): Pr
   });
   if (!response.ok) {
     let message = `Failed to reset password (HTTP ${response.status})`;
-    try {
-      const data = await response.json();
-      if (data?.error) message = data.error;
-    } catch {
-      const txt = await response.text().catch(() => '');
-      if (txt) message = txt;
+    const errorText = await response.text();
+    if (errorText) {
+      try {
+        const data = JSON.parse(errorText);
+        if (data?.error) message = data.error;
+        if (data?.message) message = data.message;
+      } catch {
+        message = errorText;
+      }
     }
     throw new Error(message);
   }
