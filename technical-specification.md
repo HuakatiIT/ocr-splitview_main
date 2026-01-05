@@ -15,7 +15,7 @@
 OCR SplitView is a web-based Optical Character Recognition (OCR) application that provides users with an intuitive interface to extract text from images. The system consists of a React-based single-page application (SPA) frontend and a Node.js/Express backend that serves as an API gateway to external OCR services.
 
 ### 1.1 Key Features
-- **OCR Processing**: Real-time text extraction from uploaded images using Typhoon AI API
+- **OCR Processing**: Real-time text extraction from uploaded images using Typhoon AI API or Ollama with local vision models
 - **User Management**: Registration, authentication, and role-based access control
 - **API Key Management**: User-specific API keys with usage limits and expiration
 - **Processing History**: Local storage of OCR results with image previews
@@ -25,6 +25,7 @@ OCR SplitView is a web-based Optical Character Recognition (OCR) application tha
 - **Containerized Deployment**: Docker and Kubernetes support for scalable deployment
 - **Searchable PDF Generation**: Create PDFs with embedded text from OCR results
 - **Multi-language Support**: Thai and English text recognition
+- **Engine Selection**: Configurable OCR engine (Typhoon or Ollama) with per-request override
 
 ### 1.2 Technology Stack
 
@@ -54,7 +55,7 @@ OCR SplitView is a web-based Optical Character Recognition (OCR) application tha
 - **Configuration**: ConfigMaps and Secrets
 
 #### External Services
-- **OCR Engine**: Typhoon AI API (https://api.opentyphoon.ai/v1)
+- **OCR Engine**: Typhoon AI API (https://api.opentyphoon.ai/v1) or Ollama (local vision models)
 - **Text Detection**: CRAFT service for text region detection
 - **Email Service**: SMTP (Gmail/MailDev configurable)
 
@@ -77,6 +78,7 @@ graph TB
     subgraph "Application Layer"
         Backend[Backend API Gateway<br/>Node.js + Express]
         Craft[CRAFT Service<br/>Python + Flask<br/>Text Detection]
+        Ollama[Ollama Service<br/>Local Vision Models<br/>OCR Processing]
     end
 
     subgraph "Data Layer"
@@ -96,6 +98,7 @@ graph TB
     React --> Backend
     Frontend --> Backend
     Backend --> Craft
+    Backend --> Ollama
     Backend --> MySQL
     Backend --> Oracle
     Backend --> Files
@@ -110,7 +113,7 @@ graph TB
 
     class Browser,React client
     class Nginx,Frontend presentation
-    class Backend,Craft application
+    class Backend,Craft,Ollama application
     class MySQL,Oracle,Files data
     class Typhoon,SMTP external
 ```
@@ -118,9 +121,9 @@ graph TB
 ### 2.1 Architecture Flow
 1. **User Interaction**: Users interact with the React SPA in their web browser
 2. **Frontend Service**: Serves static React application files via Nginx
-3. **Backend API Gateway**: Handles authentication, API key validation, and proxies OCR requests
+3. **Backend API Gateway**: Handles authentication, API key validation, and routes OCR requests to selected engine
 4. **Text Detection**: Optional CRAFT service for advanced text region detection
-5. **OCR Processing**: Typhoon AI API processes the actual OCR extraction
+5. **OCR Processing**: Typhoon AI API or Ollama service processes the actual OCR extraction based on configuration or request parameters
 6. **Database Layer**: Stores user data, API keys, and configuration
 7. **File Storage**: Persistent storage for configuration files and API keys
 
@@ -179,8 +182,13 @@ The backend serves as an API gateway with the following responsibilities:
 - **requirements.txt**: Python dependencies for CRAFT implementation
 - **Dockerfile**: Containerization for the CRAFT service
 
+#### Ollama Service (services/ollama/)
+- **Dockerfile**: Containerization for Ollama with vision models
+- **Purpose**: Local OCR processing using vision-capable language models
+
 ### 3.3 External Integrations
-- **Typhoon AI API**: Primary OCR processing engine
+- **Typhoon AI API**: Cloud-based OCR processing engine
+- **Ollama**: Local vision model service for OCR processing
 - **CRAFT Algorithm**: Text detection for enhanced PDF generation
 - **SMTP Services**: Email delivery for notifications and password reset
 
@@ -204,11 +212,11 @@ The backend serves as an API gateway with the following responsibilities:
 
 ### 4.2 OCR Processing Endpoints
 - `POST /v1/ocr` - OCR processing (public)
-  - **Request**: FormData with image file
-  - **Response**: OCR results from Typhoon API
+  - **Request**: FormData with image file, optional `engine` parameter ("typhoon" or "ollama")
+  - **Response**: OCR results from selected engine (Typhoon or Ollama)
 - `POST /api/ocr_v1` - OCR processing (developer API key required)
-  - **Request**: FormData with image file + Bearer token
-  - **Response**: OCR results
+  - **Request**: FormData with image file + Bearer token, optional `engine` parameter
+  - **Response**: OCR results from selected engine
 - `POST /v1/gen_pdf` - Generate searchable PDF
   - **Request**: `{ text: string, filename?: string }`
   - **Response**: PDF file download
@@ -345,6 +353,9 @@ interface SystemConfig {
   oracleUser?: string;
   oraclePassword?: string;
   oracleServiceName?: string;
+  ocrEngine?: 'typhoon' | 'ollama';
+  ollamaUrl?: string;
+  ollamaModel?: string;
 }
 ```
 
@@ -468,6 +479,11 @@ System configuration is stored in JSON files (`db-config.json`) for dynamic upda
 - **Dependencies**: PyTorch, OpenCV, Flask
 - **Purpose**: Text region detection service
 
+#### Ollama Container (services/ollama/Dockerfile)
+- **Base Image**: ollama/ollama
+- **Purpose**: Local vision model service for OCR processing
+- **Models**: Pre-loaded vision models (e.g., llava)
+
 ### 7.2 Docker Compose Deployment
 ```yaml
 version: "3.9"
@@ -552,6 +568,8 @@ MYSQL_DB=ocr_users_db
 # OCR Service
 TYPHOON_API_KEY=your_typhoon_api_key
 TYPHOON_BASE_URL=https://api.opentyphoon.ai/v1
+OLLAMA_URL=http://ocr-ollama:11434
+OLLAMA_MODEL=llava
 
 # Email Configuration
 SMTP_HOST=smtp.gmail.com

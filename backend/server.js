@@ -111,7 +111,12 @@ const DEFAULT_CONFIG = {
     maxTokens: 16000,
     temperature: 0.1,
     topP: 0.6,
-    repetitionPenalty: 1.1
+    repetitionPenalty: 1.1,
+
+    // Ollama Config
+    ocrEngine: process.env.OCR_ENGINE || 'typhoon', // Default engine
+    ollamaUrl: process.env.OLLAMA_URL || 'http://ocr-ollama:11434',
+    ollamaModel: process.env.OLLAMA_MODEL || 'llava'
 };
 
 const CRAFT_URL = process.env.CRAFT_URL || 'http://craft-service:5000/detect';
@@ -254,8 +259,7 @@ app.post('/v1/ocr', upload.single('file'), async (req, res) => {
     // Developer/user API key check disabled per request (UI does not require bearer)
     const keys = [];
     const keyIndex = -1;
-    
-    // 4. ส่งต่อให้ Typhoon Engine (Proxy)
+
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
@@ -266,41 +270,102 @@ app.post('/v1/ocr', upload.single('file'), async (req, res) => {
             return res.status(400).json({ error: 'Unsupported file type for OCR', detail: `Got ${req.file.mimetype}` });
         }
 
-        console.log('Security Passed. Forwarding to Engine...');
+        console.log('Security Passed. Determining OCR Engine...');
 
         const systemConfig = getGlobalConfig();
 
-        const formData = new FormData();
-        formData.append('file', req.file.buffer, req.file.originalname || 'upload.bin');
-        formData.append('model', systemConfig.model);
-        formData.append('task_type', systemConfig.taskType);
-        formData.append('max_tokens', String(systemConfig.maxTokens));
-        formData.append('temperature', String(systemConfig.temperature));
-        formData.append('top_p', String(systemConfig.topP));
-        formData.append('repetition_penalty', String(systemConfig.repetitionPenalty));
+        // Determine engine: request parameter takes precedence over system config
+        const engine = (req.body?.engine || req.query?.engine || systemConfig.ocrEngine || 'typhoon').toLowerCase();
+        console.log(`Using OCR Engine: ${engine}`);
 
-        let typhoonUrl = (systemConfig.baseUrl || '').trim();
-        if (!typhoonUrl) {
-            return res.status(500).json({ error: 'Typhoon base URL is not configured' });
-        }
-        if (typhoonUrl.endsWith('/')) typhoonUrl = typhoonUrl.slice(0, -1);
-        if (!typhoonUrl.endsWith('/ocr')) typhoonUrl += '/ocr';
+        let response;
 
-        const response = await axios.post(typhoonUrl, formData, {
-            headers: {
-                ...formData.getHeaders(),
-                'Authorization': `Bearer ${systemConfig.apiKey}`
-            },
-            maxBodyLength: 30 * 1024 * 1024,
-            timeout: 60000,
-            validateStatus: () => true
-        });
+        if (engine === 'ollama') {
+            // Route to Ollama
+            const base64Image = req.file.buffer.toString('base64');
+            const imageMime = req.file.mimetype;
+            const ollamaPayload = {
+                model: systemConfig.ollamaModel,
+                messages: [
+                    {
+                        role: 'user',
+                        content: [
+                            { type: 'text', text: 'Extract all visible text from this image. Return only the extracted text without any additional commentary.' },
+                            { type: 'image_url', image_url: { url: `data:${imageMime};base64,${base64Image}` } }
+                        ]
+                    }
+                ],
+                stream: false
+            };
 
-        if (response.status === 401) {
-            throw Object.assign(new Error('Typhoon auth failed'), { response });
-        }
-        if (response.status >= 400) {
-            throw Object.assign(new Error('Typhoon returned error'), { response });
+            let ollamaUrl = (systemConfig.ollamaUrl || '').trim();
+            if (!ollamaUrl) {
+                return res.status(500).json({ error: 'Ollama URL is not configured' });
+            }
+            if (ollamaUrl.endsWith('/')) ollamaUrl = ollamaUrl.slice(0, -1);
+            if (!ollamaUrl.endsWith('/api/chat')) ollamaUrl += '/api/chat';
+
+            response = await axios.post(ollamaUrl, ollamaPayload, {
+                headers: { 'Content-Type': 'application/json' },
+                maxBodyLength: 30 * 1024 * 1024,
+                timeout: 120000, // Ollama might take longer
+                validateStatus: () => true
+            });
+
+            if (response.status >= 400) {
+                throw Object.assign(new Error('Ollama returned error'), { response });
+            }
+
+            // Normalize Ollama response to Typhoon format
+            const extractedText = response.data.message?.content || '';
+            const normalizedResponse = {
+                results: [
+                    {
+                        success: true,
+                        message: {
+                            choices: [{
+                                message: { content: JSON.stringify({ natural_text: extractedText }) }
+                            }]
+                        }
+                    }
+                ]
+            };
+            response.data = normalizedResponse;
+
+        } else {
+            // Default to Typhoon (backward compatibility)
+            const formData = new FormData();
+            formData.append('file', req.file.buffer, req.file.originalname || 'upload.bin');
+            formData.append('model', systemConfig.model);
+            formData.append('task_type', systemConfig.taskType);
+            formData.append('max_tokens', String(systemConfig.maxTokens));
+            formData.append('temperature', String(systemConfig.temperature));
+            formData.append('top_p', String(systemConfig.topP));
+            formData.append('repetition_penalty', String(systemConfig.repetitionPenalty));
+
+            let typhoonUrl = (systemConfig.baseUrl || '').trim();
+            if (!typhoonUrl) {
+                return res.status(500).json({ error: 'Typhoon base URL is not configured' });
+            }
+            if (typhoonUrl.endsWith('/')) typhoonUrl = typhoonUrl.slice(0, -1);
+            if (!typhoonUrl.endsWith('/ocr')) typhoonUrl += '/ocr';
+
+            response = await axios.post(typhoonUrl, formData, {
+                headers: {
+                    ...formData.getHeaders(),
+                    'Authorization': `Bearer ${systemConfig.apiKey}`
+                },
+                maxBodyLength: 30 * 1024 * 1024,
+                timeout: 60000,
+                validateStatus: () => true
+            });
+
+            if (response.status === 401) {
+                throw Object.assign(new Error('Typhoon auth failed'), { response });
+            }
+            if (response.status >= 400) {
+                throw Object.assign(new Error('Typhoon returned error'), { response });
+            }
         }
 
         if (keyIndex >= 0) {
@@ -309,12 +374,12 @@ app.post('/v1/ocr', upload.single('file'), async (req, res) => {
         }
 
         console.log('✅ Engine Response Success. Usage Updated.');
-        
+
         res.json(response.data);
 
     } catch (error) {
         console.error('❌ Engine Proxy Error:', error.response?.data || error.message);
-        
+
         const statusCode = error.response?.status || 500;
         let finalErrorMsg = 'Failed to process image with OCR Engine';
 
@@ -324,7 +389,7 @@ app.post('/v1/ocr', upload.single('file'), async (req, res) => {
              finalErrorMsg = `[Engine Error] ${error.response.data.error}`;
         }
 
-        res.status(statusCode).json({ 
+        res.status(statusCode).json({
             error: finalErrorMsg,
             details: error.response?.data || error.message
         });
@@ -345,30 +410,90 @@ app.post('/api/ocr_v1', requireDeveloperKey, upload.single('file'), async (req, 
 
         const systemConfig = getGlobalConfig();
 
-        const formData = new FormData();
-        formData.append('file', req.file.buffer, req.file.originalname || 'upload.bin');
-        formData.append('model', systemConfig.model);
-        formData.append('task_type', systemConfig.taskType);
-        formData.append('max_tokens', String(systemConfig.maxTokens));
-        formData.append('temperature', String(systemConfig.temperature));
-        formData.append('top_p', String(systemConfig.topP));
-        formData.append('repetition_penalty', String(systemConfig.repetitionPenalty));
+        // Determine engine: request parameter takes precedence over system config
+        const engine = (req.body?.engine || req.query?.engine || systemConfig.ocrEngine || 'typhoon').toLowerCase();
+        console.log(`[Developer API] Using OCR Engine: ${engine}`);
 
-        let typhoonUrl = (systemConfig.baseUrl || '').trim();
-        if (!typhoonUrl) return res.status(500).json({ error: 'Typhoon base URL is not configured' });
-        if (typhoonUrl.endsWith('/')) typhoonUrl = typhoonUrl.slice(0, -1);
-        if (!typhoonUrl.endsWith('/ocr')) typhoonUrl += '/ocr';
+        let response;
 
-        const response = await axios.post(typhoonUrl, formData, {
-            headers: { ...formData.getHeaders(), 'Authorization': `Bearer ${systemConfig.apiKey}` },
-            maxBodyLength: 30 * 1024 * 1024,
-            timeout: 60000,
-            validateStatus: () => true
-        });
+        if (engine === 'ollama') {
+            // Route to Ollama
+            const base64Image = req.file.buffer.toString('base64');
+            const imageMime = req.file.mimetype;
+            const ollamaPayload = {
+                model: systemConfig.ollamaModel,
+                messages: [
+                    {
+                        role: 'user',
+                        content: [
+                            { type: 'text', text: 'Extract all visible text from this image. Return only the extracted text without any additional commentary.' },
+                            { type: 'image_url', image_url: { url: `data:${imageMime};base64,${base64Image}` } }
+                        ]
+                    }
+                ],
+                stream: false
+            };
 
-        if (response.status >= 400) {
-            console.error('[Developer API] Typhoon error:', response.data);
-            return res.status(response.status).json(response.data);
+            let ollamaUrl = (systemConfig.ollamaUrl || '').trim();
+            if (!ollamaUrl) return res.status(500).json({ error: 'Ollama URL is not configured' });
+            if (ollamaUrl.endsWith('/')) ollamaUrl = ollamaUrl.slice(0, -1);
+            if (!ollamaUrl.endsWith('/api/chat')) ollamaUrl += '/api/chat';
+
+            response = await axios.post(ollamaUrl, ollamaPayload, {
+                headers: { 'Content-Type': 'application/json' },
+                maxBodyLength: 30 * 1024 * 1024,
+                timeout: 120000,
+                validateStatus: () => true
+            });
+
+            if (response.status >= 400) {
+                console.error('[Developer API] Ollama error:', response.data);
+                return res.status(response.status).json({ error: 'Ollama processing failed', details: response.data });
+            }
+
+            // Normalize Ollama response to Typhoon format
+            const extractedText = response.data.message?.content || '';
+            const normalizedResponse = {
+                results: [
+                    {
+                        success: true,
+                        message: {
+                            choices: [{
+                                message: { content: JSON.stringify({ natural_text: extractedText }) }
+                            }]
+                        }
+                    }
+                ]
+            };
+            response.data = normalizedResponse;
+
+        } else {
+            // Default to Typhoon
+            const formData = new FormData();
+            formData.append('file', req.file.buffer, req.file.originalname || 'upload.bin');
+            formData.append('model', systemConfig.model);
+            formData.append('task_type', systemConfig.taskType);
+            formData.append('max_tokens', String(systemConfig.maxTokens));
+            formData.append('temperature', String(systemConfig.temperature));
+            formData.append('top_p', String(systemConfig.topP));
+            formData.append('repetition_penalty', String(systemConfig.repetitionPenalty));
+
+            let typhoonUrl = (systemConfig.baseUrl || '').trim();
+            if (!typhoonUrl) return res.status(500).json({ error: 'Typhoon base URL is not configured' });
+            if (typhoonUrl.endsWith('/')) typhoonUrl = typhoonUrl.slice(0, -1);
+            if (!typhoonUrl.endsWith('/ocr')) typhoonUrl += '/ocr';
+
+            response = await axios.post(typhoonUrl, formData, {
+                headers: { ...formData.getHeaders(), 'Authorization': `Bearer ${systemConfig.apiKey}` },
+                maxBodyLength: 30 * 1024 * 1024,
+                timeout: 60000,
+                validateStatus: () => true
+            });
+
+            if (response.status >= 400) {
+                console.error('[Developer API] Typhoon error:', response.data);
+                return res.status(response.status).json(response.data);
+            }
         }
 
         res.json(response.data);

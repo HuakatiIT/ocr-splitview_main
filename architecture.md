@@ -5,7 +5,7 @@
 OCR SplitView is a web-based OCR (Optical Character Recognition) application that provides users with an intuitive interface to extract text from images. The system consists of a React-based single-page application (SPA) frontend and a Node.js/Express backend that serves as an API gateway to the Typhoon OCR service. The application supports user authentication, API key management, processing history, and administrative controls.
 
 ### Key Features
-- **OCR Processing**: Real-time text extraction from uploaded images using Typhoon AI API
+- **OCR Processing**: Real-time text extraction from uploaded images using Typhoon AI API or Ollama with local vision models
 - **User Management**: Registration, authentication, and role-based access control
 - **API Key Management**: User-specific API keys with usage limits and expiration
 - **Processing History**: Local storage of OCR results with image previews
@@ -13,6 +13,7 @@ OCR SplitView is a web-based OCR (Optical Character Recognition) application tha
 - **Admin Dashboard**: User management and system configuration
 - **Hybrid Storage**: Combination of local storage and server-side databases
 - **Containerized Deployment**: Docker and Kubernetes support for scalable deployment
+- **Engine Selection**: Configurable OCR engine (Typhoon or Ollama) with per-request override
 
 ## High-Level Architecture Diagram
 
@@ -42,8 +43,8 @@ OCR SplitView is a web-based OCR (Optical Character Recognition) application tha
 ### Architecture Flow
 1. **User Interaction**: Users interact with the React SPA in their web browser
 2. **Frontend Service**: Serves static React application files
-3. **Backend API Gateway**: Handles authentication, API key validation, and proxies OCR requests
-4. **External OCR Service**: Typhoon AI API processes the actual OCR extraction
+3. **Backend API Gateway**: Handles authentication, API key validation, and routes OCR requests to selected engine
+4. **OCR Processing**: Typhoon AI API or Ollama service processes the actual OCR extraction based on configuration or request parameters
 5. **Database Layer**: Stores user data, API keys, and configuration
 6. **Storage Layer**: Persistent volume for configuration files and API keys
 
@@ -91,7 +92,7 @@ The backend serves as an API gateway with the following responsibilities:
 #### API Endpoints
 - `POST /api/login` - User authentication
 - `POST /api/register` - User registration
-- `POST /v1/ocr` - OCR processing (proxied to Typhoon)
+- `POST /v1/ocr` - OCR processing (routed to Typhoon or Ollama)
 - `GET/POST /api/config` - System configuration
 - `GET/POST/PUT/DELETE /api/keys/*` - API key management
 - `GET/PUT/DELETE /api/users/*` - User management (admin only)
@@ -139,15 +140,19 @@ Frontend Services
 5. API Key Validation
         │ (Usage limits, expiration)
         ▼
-6. Image Preprocessing
-        │
+6. Engine Selection
+        │ (Config default or request param)
         ▼
-7. Typhoon API Call
-        │
-        ▼
-8. Response Processing
-        │
-        ▼
+7. Route to OCR Engine
+        ┌─────────────┴─────────────┐
+        │                           │
+    Typhoon API Call          Ollama API Call
+        │                           │
+        ▼                           ▼
+8. Response Processing        Response Processing
+        │                           │
+        └─────────────┬─────────────┘
+                      ▼
 9. Usage Tracking Update
         │
         ▼
@@ -297,7 +302,7 @@ CREATE TABLE users (
 - **Configuration**: ConfigMaps and Secrets
 
 ### External Services
-- **OCR Engine**: Typhoon AI API (https://api.opentyphoon.ai/v1)
+- **OCR Engine**: Typhoon AI API (https://api.opentyphoon.ai/v1) or Ollama (local vision models)
 - **Email Service**: Gmail SMTP (configurable)
 
 ## Scalability Considerations

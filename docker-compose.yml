@@ -77,6 +77,24 @@ services:
     ports:
       - "3000:80"
 
+   ocr-ollama:
+     image: ollama/ollama:latest
+     container_name: ocr-ollama
+     restart: unless-stopped
+     ports:
+       - "11434:11434"
+     volumes:
+       - ollama-data:/root/.ollama
+     environment:
+       - OLLAMA_HOST=0.0.0.0
+     command: ["serve"]
+     healthcheck:
+       test: ["CMD", "ollama", "list"]
+       interval: 30s
+       timeout: 10s
+       retries: 5
+
 volumes:
   ocr-mysql-data:
   ocr-backend-data:
+  ollama-data:
