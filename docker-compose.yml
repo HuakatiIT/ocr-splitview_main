@@ -1,0 +1,82 @@
+version: "3.9"
+
+services:
+  ocr-mysql:
+    image: mysql:8.0
+    container_name: ocr-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DB}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - ocr-mysql-data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ocr-backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: ocr-backend
+    restart: unless-stopped
+    depends_on:
+      ocr-mysql:
+        condition: service_healthy
+    env_file:
+      - .env.deploy
+    environment:
+      PORT: ${PORT:-3001}
+      DB_PROVIDER: ${DB_PROVIDER:-mysql}
+      MYSQL_HOST: ocr-mysql
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASS: ${MYSQL_PASSWORD}
+      MYSQL_DB: ${MYSQL_DB}
+      ORACLE_HOST: ${ORACLE_HOST:-localhost}
+      ORACLE_PORT: ${ORACLE_PORT:-1521}
+      ORACLE_USER: ${ORACLE_USER:-SYSTEM}
+      ORACLE_PASS: ${ORACLE_PASS:-admin123}
+      ORACLE_SERVICE: ${ORACLE_SERVICE:-FREEPDB1}
+      ORACLE_LIB_DIR: ${ORACLE_LIB_DIR:-}
+      TYPHOON_API_KEY: ${TYPHOON_API_KEY}
+      TYPHOON_BASE_URL: ${TYPHOON_BASE_URL:-https://api.opentyphoon.ai/v1}
+      CRAFT_URL: ${CRAFT_URL:-http://craft-service:5000/detect}
+      MOCK_OCR: ${MOCK_OCR:-false}
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-${MAIL_USER}}
+      SMTP_PASS: ${SMTP_PASS:-${MAIL_PASS}}
+      MAIL_USER: ${MAIL_USER}
+      MAIL_PASS: ${MAIL_PASS}
+      DATA_DIR: ${DATA_DIR:-/data}
+    ports:
+      - "3001:3001"
+    volumes:
+      - ocr-backend-data:/data
+
+  ocr-frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+    container_name: ocr-frontend
+    restart: unless-stopped
+    depends_on:
+      - ocr-backend
+    environment:
+      NODE_ENV: production
+    ports:
+      - "3000:80"
+
+volumes:
+  ocr-mysql-data:
+  ocr-backend-data:

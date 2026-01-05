@@ -6,10 +6,15 @@ metadata:
 data:
   PORT: "3001"
   DB_PROVIDER: "mysql"
-  MYSQL_HOST: "mysql"        # service name of your DB
+  SMTP_HOST: "maildev"
+  SMTP_PORT: "1025"
+  SMTP_SECURE: "false"
+  SMTP_USER: "maildev"
+  SMTP_PASS: "maildev"
+  MYSQL_HOST: "mysql.default.svc.cluster.local"
   MYSQL_PORT: "3306"
   MYSQL_USER: "root"
-  MYSQL_PASS: "password"
+  MYSQL_PASS: "rootpass"
   MYSQL_DB: "ocr_users_db"
   ORACLE_HOST: "oracle-db"
   ORACLE_PORT: "1521"
@@ -26,8 +31,8 @@ metadata:
   namespace: ocr
 type: Opaque
 stringData:
-  MAIL_USER: "your-gmail@example.com"
-  MAIL_PASS: "app-password"
+  MAIL_USER: ""
+  MAIL_PASS: ""
   TYPHOON_API_KEY: "replace-me"
 ---
 apiVersion: v1
@@ -58,7 +63,8 @@ spec:
     spec:
       containers:
       - name: backend
-        image: your-registry/ocr-backend:1.0.0 # replace with pushed image
+        image: ocr-backend:local
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 3001
         envFrom:

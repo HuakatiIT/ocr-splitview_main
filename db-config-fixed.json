@@ -1,0 +1,23 @@
+{
+  "dbProvider": "mysql",
+  "allowSignup": false,
+  "mysqlHost": "mysql",
+  "mysqlPort": 3306,
+  "mysqlUser": "ocr_user",
+  "mysqlPassword": "super-strong-password",
+  "mysqlDatabase": "ocr_users_db",
+  "oracleHost": "oracle-db",
+  "oraclePort": 1521,
+  "oracleUser": "SYSTEM",
+  "oraclePassword": "admin123",
+  "oracleServiceName": "FREEPDB1",
+  "apiKey": "sk-N0BWvEJ7sMUxQrE9k4JIRL9ehdGZZRy7fP3gPtnie8QkZ8Kg",
+  "baseUrl": "https://api.opentyphoon.ai/v1",
+  "model": "typhoon-ocr",
+  "taskType": "default",
+  "maxTokens": 16000,
+  "temperature": 0.1,
+  "topP": 0.6,
+  "repetitionPenalty": 1.1,
+  "autoApproveApiKeys": false
+}

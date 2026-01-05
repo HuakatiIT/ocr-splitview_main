@@ -1,6 +1,10 @@
 
 import React, { useState, useEffect } from 'react';
-import { Download, ScanLine, AlertCircle, CheckCircle2, Loader2, RefreshCw, X, Settings as SettingsIcon, LogOut, Shield, History, Play, Image as ImageIcon, Check, Trash2, Files } from 'lucide-react';
+import { Download, ScanLine, AlertCircle, CheckCircle2, Loader2, RefreshCw, X, Settings as SettingsIcon, LogOut, Shield, History, Play, Image as ImageIcon, Check, Trash2, Files, FileText } from 'lucide-react';
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import fontkit from '@pdf-lib/fontkit';
+import notoThaiFontUrl from './assets/Noto_Sans_Thai/static/NotoSansThai-Regular.ttf?url';
+import Tesseract from 'tesseract.js';
 import { processImage } from './services/ocrService';
 import { getCurrentUser, logout } from './services/authService';
 import { saveHistoryItem } from './services/historyService';
@@ -15,6 +19,10 @@ import AdminDashboard from './components/AdminDashboard';
 import HistorySidebar from './components/HistorySidebar';
 
 type ViewMode = 'ocr' | 'settings' | 'login' | 'register' | 'admin' | 'loading';
+
+const API_BASE =
+  import.meta.env.VITE_API_BASE_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+const CRAFT_DETECT_URL = `${API_BASE}/api/craft/detect`;
 
 const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -36,6 +44,7 @@ const App: React.FC = () => {
   // Batch Mode State
   const [batchQueue, setBatchQueue] = useState<BatchItem[]>([]);
   const [isBatchProcessing, setIsBatchProcessing] = useState(false);
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -302,6 +311,341 @@ const App: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
+  let cachedThaiFont: Uint8Array | null = null;
+
+  const loadThaiFont = async () => {
+    if (cachedThaiFont) return cachedThaiFont;
+    const res = await fetch(notoThaiFontUrl);
+    const bytes = await res.arrayBuffer();
+    cachedThaiFont = new Uint8Array(bytes);
+    return cachedThaiFont;
+  };
+
+  const createSearchablePdf = async (
+    rawText: unknown,
+    imageUrl?: string | null,
+    imageFile?: File | null,
+    wordBoxes?: { text: string; bbox: { x0: number; y0: number; x1: number; y1: number } }[],
+    opts?: {
+      useImageBackground?: boolean;
+      imageSize?: { width: number; height: number };
+      metadata?: { sourceName?: string; generatedAt?: string };
+    }
+  ) => {
+    const safeText = typeof rawText === 'string' ? rawText : JSON.stringify(rawText ?? '', null, 2);
+    const pdfDoc = await PDFDocument.create();
+    pdfDoc.registerFontkit(fontkit);
+    let font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+    try {
+      const thaiBytes = await loadThaiFont();
+      font = await pdfDoc.embedFont(thaiBytes, { subset: true });
+    } catch (e) {
+      console.warn('Using fallback Helvetica, Thai glyphs may be replaced:', e);
+    }
+
+    const fontSize = 12;
+    const lineHeight = fontSize * 1.4;
+    const margin = 24;
+    const defaultPage = { width: 595, height: 842 }; // A4-ish
+
+    let embeddedImage: any = null;
+    let imageDims = opts?.imageSize ? { ...opts.imageSize } : { ...defaultPage };
+    if (!imageDims.width || !imageDims.height || imageDims.width <= 0 || imageDims.height <= 0) {
+      imageDims = { ...defaultPage };
+    }
+    const wantImage = true; // always embed original image on page 1 when available
+    const wantTextBackground = opts?.useImageBackground === true;
+
+    const tryEmbed = async (bytes: ArrayBuffer) => {
+      try {
+        embeddedImage = await pdfDoc.embedPng(bytes);
+      } catch {
+        embeddedImage = await pdfDoc.embedJpg(bytes);
+      }
+      imageDims = { width: embeddedImage.width, height: embeddedImage.height };
+      return true;
+    };
+
+    let embedded = false;
+
+    if (wantImage && imageFile) {
+      try {
+        const fileBytes = await imageFile.arrayBuffer();
+        embedded = await tryEmbed(fileBytes);
+      } catch (err) {
+        console.warn('Failed to embed image file, will try URL', err);
+      }
+    }
+
+    if (wantImage && !embedded && imageUrl) {
+      try {
+        const imgRes = await fetch(imageUrl);
+        const imgBytes = await imgRes.arrayBuffer();
+        embedded = await tryEmbed(imgBytes);
+      } catch (err) {
+        console.warn('Failed to embed image for PDF, falling back to text-only', err);
+      }
+    }
+
+    // scale image to fit within default A4 if larger
+    const fitScale = Math.min(
+      defaultPage.width / imageDims.width,
+      defaultPage.height / imageDims.height,
+      1
+    );
+    const pageWidth = Math.max(1, imageDims.width * fitScale);
+    const pageHeight = Math.max(1, imageDims.height * fitScale);
+    const textOpacity = wantTextBackground && embeddedImage ? 0.02 : 1;
+
+    // Page 1: original image (if available)
+    if (embeddedImage) {
+      const originalPage = pdfDoc.addPage([pageWidth, pageHeight]);
+      originalPage.drawImage(embeddedImage, { x: 0, y: 0, width: pageWidth, height: pageHeight });
+    }
+
+    // Page 2: generated text layout
+    let page = pdfDoc.addPage([pageWidth, pageHeight]);
+    if (wantTextBackground && embeddedImage) {
+      page.drawImage(embeddedImage, { x: 0, y: 0, width: pageWidth, height: pageHeight });
+    }
+
+    // Metadata block
+    if (opts?.metadata) {
+      const metaLines = [
+        opts.metadata.sourceName ? `Source: ${opts.metadata.sourceName}` : null,
+        opts.metadata.generatedAt ? `Generated: ${opts.metadata.generatedAt}` : null
+      ].filter(Boolean) as string[];
+      let metaY = page.getHeight() - margin;
+      metaLines.forEach((line) => {
+        page.drawText(line, { x: margin, y: metaY, size: 10, font, opacity: 0.6, color: rgb(0, 0, 0) });
+        metaY -= 12;
+      });
+      metaY -= 8; // add breathing room after metadata
+      // leave a small gap below metadata
+      page.drawLine({ start: { x: margin, y: metaY }, end: { x: page.getWidth() - margin, y: metaY }, color: rgb(0, 0, 0), opacity: 0.1 });
+    }
+
+    let y = page.getHeight() - margin - 48; // leave space for metadata + gap
+    const getMaxWidth = () => page.getWidth() - margin * 2;
+
+    const encodeSafe = (line: string) => {
+      try {
+        font.encodeText(line);
+        return line;
+      } catch {
+        return line.replace(/[^\x20-\x7E]+/g, '?');
+      }
+    };
+
+    const addLine = (line: string) => {
+      if (y <= margin) {
+        page = pdfDoc.addPage([pageWidth, pageHeight]);
+        if (embeddedImage) {
+          page.drawImage(embeddedImage, { x: 0, y: 0, width: pageWidth, height: pageHeight });
+        }
+        y = page.getHeight() - margin;
+      }
+      const printable = encodeSafe(line);
+      if (!printable) {
+        y -= lineHeight;
+        return;
+      }
+      page.drawText(printable, { x: margin, y, size: fontSize, font, opacity: textOpacity });
+      y -= lineHeight;
+    };
+
+    const wrapAndAdd = (line: string) => {
+      if (!line.trim()) {
+        y -= lineHeight / 2;
+        return;
+      }
+      const words = line.split(/\s+/);
+      let current = '';
+      words.forEach((word) => {
+        const safeWord = encodeSafe(word);
+        if (!safeWord) return;
+        const candidateRaw = current ? `${current} ${safeWord}` : safeWord;
+        const width = font.widthOfTextAtSize(candidateRaw, fontSize);
+        if (width > getMaxWidth() && current) {
+          addLine(current);
+          current = safeWord;
+        } else {
+          current = candidateRaw;
+        }
+      });
+      if (current) addLine(current);
+    };
+
+    if (wordBoxes && wordBoxes.length > 0) {
+      wordBoxes.forEach(({ text, bbox }) => {
+        const safeWord = encodeSafe(text);
+        if (!safeWord) return;
+        const scaleX = pageWidth / imageDims.width;
+        const scaleY = pageHeight / imageDims.height;
+        const scaledX = bbox.x0 * scaleX;
+        const scaledY0 = bbox.y0 * scaleY;
+        const scaledY1 = bbox.y1 * scaleY;
+        if (!isFinite(scaledX) || !isFinite(scaledY0) || !isFinite(scaledY1)) return;
+        const wordHeight = scaledY1 - scaledY0 || lineHeight * 0.8;
+        const wordSize = Math.max(8, Math.min(18, wordHeight));
+        const yPos = pageHeight - scaledY1; // flip y
+        page.drawText(safeWord, {
+          x: scaledX,
+          y: yPos,
+          size: wordSize,
+          font,
+          opacity: textOpacity
+        });
+      });
+    } else {
+      safeText.split(/\r?\n/).forEach(wrapAndAdd);
+    }
+
+    return pdfDoc.save();
+  };
+
+  const runInlineOcrWithBoxes = async (file?: File | null, url?: string | null) => {
+    const src = file ? URL.createObjectURL(file) : url || '';
+    if (!src) throw new Error('No image source available for OCR');
+    const img = await loadImageElement(src);
+    const imageSize = { width: img.naturalWidth || img.width, height: img.naturalHeight || img.height };
+    const { data } = await Tesseract.recognize(src, 'eng+tha');
+    const wordBoxes = (((data as any)?.words) || [])
+      .filter(w => (w.text || '').trim())
+      .map(w => ({
+        text: w.text.trim(),
+        bbox: { x0: w.bbox.x0, y0: w.bbox.y0, x1: w.bbox.x1, y1: w.bbox.y1 }
+      }));
+    if (file) URL.revokeObjectURL(src);
+    return { wordBoxes, imageSize };
+  };
+
+  const runCraftDetect = async (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch(CRAFT_DETECT_URL, { method: 'POST', body: formData });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Craft detect failed: ${res.status} ${text}`);
+    }
+    const data = await res.json();
+    return (data.boxes || []) as { bbox: { x0: number; y0: number; x1: number; y1: number } }[];
+  };
+
+  const loadImageElement = (src: string) =>
+    new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = src;
+    });
+
+  const runCraftWithRecognition = async (file: File, previewUrl?: string | null) => {
+    const img = await loadImageElement(previewUrl || URL.createObjectURL(file));
+    const imageSize = { width: img.naturalWidth || img.width, height: img.naturalHeight || img.height };
+    const boxes = await runCraftDetect(file);
+    if (!boxes.length) {
+      if (!previewUrl) URL.revokeObjectURL(img.src);
+      return { wordBoxes: [], imageSize };
+    }
+
+    const wordBoxes: { text: string; bbox: { x0: number; y0: number; x1: number; y1: number } }[] = [];
+
+    for (const box of boxes) {
+      const { x0, y0, x1, y1 } = box.bbox;
+      const w = Math.max(1, Math.floor(x1 - x0));
+      const h = Math.max(1, Math.floor(y1 - y0));
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) continue;
+      ctx.drawImage(img, -x0, -y0);
+      const blob: Blob | null = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      if (!blob) continue;
+      const { data } = await Tesseract.recognize(blob, 'eng+tha');
+      const text = (data.text || '').trim();
+      if (text) {
+        wordBoxes.push({ text, bbox: { x0, y0, x1, y1 } });
+      }
+    }
+
+    if (!previewUrl) URL.revokeObjectURL(img.src);
+    return { wordBoxes, imageSize };
+  };
+
+  const handleDownloadPdf = async () => {
+    try {
+      setIsGeneratingPdf(true);
+
+      let wordBoxes: { text: string; bbox: { x0: number; y0: number; x1: number; y1: number } }[] | undefined = undefined;
+      let imageSize: { width: number; height: number } | undefined = undefined;
+      if (!isBatchMode && uploadedFile) {
+        try {
+          const craftResult = await runCraftWithRecognition(uploadedFile.file, uploadedFile.previewUrl);
+          wordBoxes = craftResult.wordBoxes;
+          imageSize = craftResult.imageSize;
+        } catch (e) {
+          console.warn('CRAFT + OCR failed, falling back to inline OCR', e);
+          try {
+            const inlineResult = await runInlineOcrWithBoxes(uploadedFile.file, uploadedFile.previewUrl);
+            wordBoxes = inlineResult.wordBoxes;
+            imageSize = inlineResult.imageSize;
+          } catch (err) {
+            console.warn('Inline OCR for bbox failed, falling back to plain text overlay', err);
+          }
+        }
+      }
+
+      const text = isBatchMode
+        ? getBatchResults()
+            .map((item, idx) => {
+              const title = item.filename ? `${idx + 1}. ${item.filename}` : `${idx + 1}. Item`;
+              const status = `Status: ${item.status}`;
+              const body = item.text || '';
+              return `${title}\n${status}\n${body}`;
+            })
+            .join('\n\n')
+        : (ocrResult.extracted_text || '');
+
+      if (!text) {
+        handleError('No OCR text available to export');
+        return;
+      }
+
+      const pdfBytes = await createSearchablePdf(
+        text,
+        uploadedFile?.previewUrl || null,
+        uploadedFile?.file || null,
+        wordBoxes,
+        {
+          useImageBackground: false,
+          imageSize,
+          metadata: {
+            sourceName: uploadedFile?.file.name || undefined,
+            generatedAt: new Date().toISOString()
+          }
+        }
+      );
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ocr-result-${Date.now()}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to generate PDF:', err);
+      const msg = err instanceof Error ? err.message : 'Failed to generate PDF';
+      handleError(msg);
+    } finally {
+      setIsGeneratingPdf(false);
+    }
+  };
+
   // --- Views ---
 
   if (viewMode === 'loading') {
@@ -537,6 +881,21 @@ const App: React.FC = () => {
              Clear
            </button>
            
+           <button
+             onClick={handleDownloadPdf}
+             disabled={isGeneratingPdf || (isBatchMode ? !batchQueue.some(i => i.status === 'success') : processingState.status !== 'success')}
+            className={`
+               flex items-center gap-2 px-6 py-2 rounded font-medium text-sm transition-all
+               ${(isGeneratingPdf ? false : (isBatchMode ? batchQueue.some(i => i.status === 'success') : processingState.status === 'success')) 
+                 ? 'bg-purple-600 text-white hover:bg-purple-500 shadow-[0_0_15px_rgba(147,51,234,0.3)]' 
+                 : 'bg-industrial-800 text-gray-500 cursor-not-allowed'}
+             `}
+            >
+             {isGeneratingPdf ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
+             {isGeneratingPdf ? 'Generating PDF...' : 'Download Textable PDF'}
+           </button>
+          
+
            <button
              onClick={handleDownloadJson}
              disabled={isBatchMode ? !batchQueue.some(i => i.status === 'success') : processingState.status !== 'success'}

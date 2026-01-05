@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Save, RotateCcw, Eye, EyeOff, Server, Sliders, Cpu, ArrowLeft, Database, Wifi, CheckCircle2, AlertCircle, HardDrive, FileText, Code2, Key, Copy, XCircle, Clock, Lock, Activity, Calendar, Hash, RefreshCw, AlertTriangle, X } from 'lucide-react';
+import { Save, RotateCcw, Eye, EyeOff, Server, Sliders, Cpu, ArrowLeft, Database, Wifi, CheckCircle2, AlertCircle, FileText, Code2, Key, Copy, XCircle, Clock, Lock, Activity, Calendar, Hash, RefreshCw, AlertTriangle, X, ToggleRight, ToggleLeft } from 'lucide-react';
 import { ApiKey } from '../types';
 import { getUserApiKey, requestApiKey } from '../services/apiKeyService';
 import { getCurrentUser } from '../services/authService';
@@ -9,17 +9,20 @@ interface SettingsPageProps {
 }
 
 type Tab = 'ai' | 'database' | 'developer';
-type DbProvider = 'local' | 'mysql' | 'oracle';
+type DbProvider = 'mysql' | 'oracle';
 
 const SETTINGS_KEY = 'ocr_app_settings';
 
 // 🔥 แก้ไขจุดที่ 1: ใช้ Base URL จาก .env (ถ้าไม่มีให้ใช้ localhost)
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+// Use explicit API base if provided; otherwise fall back to current origin (works behind ingress/nodeport)
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001');
 const API_URL = `${BASE_URL}/api`; // ต่อท้ายด้วย /api สำหรับเรียก Backend ปกติ
 
 const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const currentUser = getCurrentUser();
   const isAdmin = currentUser?.role === 'admin';
+
+  const normalizeProvider = (provider: any): DbProvider => provider === 'oracle' ? 'oracle' : 'mysql';
 
   const defaultSettings = {
     apiKey: '',
@@ -30,6 +33,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     temperature: 0.1,
     topP: 0.6,
     repetitionPenalty: 1.1,
+    allowSignup: true,
     dbProvider: 'mysql' as DbProvider,
     mysqlHost: 'localhost',
     mysqlPort: 3306,
@@ -52,6 +56,19 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [connectionErrorMsg, setConnectionErrorMsg] = useState<string>('');
   const [userApiKey, setUserApiKey] = useState<ApiKey | null>(null);
   const [showUserKey, setShowUserKey] = useState(false);
+  const [swaggerAuth, setSwaggerAuth] = useState('');
+  const [swaggerTab, setSwaggerTab] = useState<'ocr' | 'pdf'>('ocr');
+  const [swaggerFile, setSwaggerFile] = useState<File | null>(null);
+  const [swaggerText, setSwaggerText] = useState('Sample text to generate searchable PDF');
+  const [swaggerFilename, setSwaggerFilename] = useState('ocr-output.pdf');
+  const [swaggerLoading, setSwaggerLoading] = useState(false);
+  const [swaggerResponse, setSwaggerResponse] = useState<string>('');
+  const [swaggerError, setSwaggerError] = useState<string>('');
+  const playgroundBase = typeof window !== 'undefined' ? window.location.origin : BASE_URL;
+  const [openEndpoints, setOpenEndpoints] = useState<Record<'ocr' | 'pdf', boolean>>({
+    ocr: false,
+    pdf: false,
+  });
 
   // State สำหรับ Modal ยืนยันขอคีย์ใหม่
   const [showRevokeConfirm, setShowRevokeConfirm] = useState(false);
@@ -76,11 +93,17 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
             const res = await fetch(`${API_URL}/config`);
             if (res.ok) {
                 const serverConfig = await res.json();
-                setSettings(prev => ({ ...prev, ...localConfig, ...serverConfig }));
+                setSettings(prev => {
+                  const merged = { ...prev, ...localConfig, ...serverConfig };
+                  return { ...merged, dbProvider: normalizeProvider((merged as any).dbProvider) };
+                });
             }
         } catch (error) {
             console.error("Failed to fetch config", error);
-            setSettings(prev => ({ ...prev, ...localConfig }));
+            setSettings(prev => {
+              const merged = { ...prev, ...localConfig };
+              return { ...merged, dbProvider: normalizeProvider((merged as any).dbProvider) };
+            });
         }
     };
 
@@ -94,6 +117,12 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     };
     fetchUserKey();
   }, []);
+
+  useEffect(() => {
+    if (userApiKey?.key) {
+      setSwaggerAuth(userApiKey.key);
+    }
+  }, [userApiKey]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     if (!isAdmin) return;
@@ -188,12 +217,64 @@ const handleReset = async () => {
      }
   };
 
-  const testDbConnection = async () => {
-    if (settings.dbProvider === 'local') {
-        setConnectionStatus('success');
-        return;
+  const handleSwaggerTest = async () => {
+    setSwaggerError('');
+    setSwaggerResponse('');
+    if (!swaggerAuth) {
+      setSwaggerError('Please enter your developer API key');
+      return;
     }
 
+    try {
+      setSwaggerLoading(true);
+      if (swaggerTab === 'ocr') {
+        if (!swaggerFile) {
+          setSwaggerError('Please attach an image or PDF file');
+          return;
+        }
+        const formData = new FormData();
+        formData.append('file', swaggerFile);
+        const res = await fetch(`/api/ocr_v1`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${swaggerAuth}` },
+          body: formData
+        });
+        const contentType = res.headers.get('content-type') || '';
+        const payload = contentType.includes('application/json') ? await res.json() : await res.text();
+        setSwaggerResponse(typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2));
+        if (!res.ok) setSwaggerError(`HTTP ${res.status}`);
+      } else {
+        if (!swaggerText.trim()) {
+          setSwaggerError('Please enter text to convert to PDF');
+          return;
+        }
+        const res = await fetch(`/api/searchable_pdf`, {
+          method: 'POST',
+          headers: { 
+            Authorization: `Bearer ${swaggerAuth}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ text: swaggerText, filename: swaggerFilename })
+        });
+
+        if (res.ok && res.headers.get('content-type')?.includes('application/pdf')) {
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          setSwaggerResponse(`Received PDF (${blob.size} bytes). Download: ${url}`);
+        } else {
+          const text = await res.text();
+          setSwaggerResponse(text);
+          if (!res.ok) setSwaggerError(`HTTP ${res.status}`);
+        }
+      }
+    } catch (err: any) {
+      setSwaggerError(err.message || 'Test failed');
+    } finally {
+      setSwaggerLoading(false);
+    }
+  };
+
+  const testDbConnection = async () => {
     setIsTestingConnection(true);
     setConnectionStatus('idle');
     setConnectionErrorMsg('');
@@ -349,16 +430,14 @@ const handleReset = async () => {
           {activeTab === 'database' && isAdmin && (
              <section className="animate-in fade-in slide-in-from-right-4 duration-300">
                 <div className="flex items-center justify-between mb-6"><h2 className="text-lg font-semibold flex items-center gap-2 text-blue-400"><Database size={20} /> Storage Provider </h2><span className="text-xs text-yellow-500 bg-yellow-900/20 px-2 py-1 rounded border border-yellow-900/50">⚠️ Changing this affects ALL users</span></div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-                  <button onClick={() => handleProviderChange('local')} className={`flex flex-col items-center justify-center p-6 rounded-xl border-2 transition-all duration-200 group ${settings.dbProvider === 'local' ? 'bg-industrial-800 border-blue-500 text-white shadow-lg' : 'bg-industrial-950 border-industrial-800 text-gray-500 hover:border-industrial-600 hover:bg-industrial-800'}`}><div className={`p-3 rounded-full mb-3 ${settings.dbProvider === 'local' ? 'bg-blue-500/20' : 'bg-industrial-900 group-hover:bg-industrial-700'}`}><HardDrive size={28} className={settings.dbProvider === 'local' ? 'text-blue-400' : 'text-gray-500'} /></div><span className="font-semibold text-sm">Local Storage</span></button>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
                   <button onClick={() => handleProviderChange('mysql')} className={`flex flex-col items-center justify-center p-6 rounded-xl border-2 transition-all duration-200 group ${settings.dbProvider === 'mysql' ? 'bg-industrial-800 border-blue-500 text-white shadow-lg' : 'bg-industrial-950 border-industrial-800 text-gray-500 hover:border-industrial-600 hover:bg-industrial-800'}`}><div className={`p-3 rounded-full mb-3 ${settings.dbProvider === 'mysql' ? 'bg-blue-500/20' : 'bg-industrial-900 group-hover:bg-industrial-700'}`}><Server size={28} className={settings.dbProvider === 'mysql' ? 'text-blue-400' : 'text-gray-500'} /></div><span className="font-semibold text-sm">MySQL Database</span></button>
                   <button onClick={() => handleProviderChange('oracle')} className={`flex flex-col items-center justify-center p-6 rounded-xl border-2 transition-all duration-200 group ${settings.dbProvider === 'oracle' ? 'bg-industrial-800 border-blue-500 text-white shadow-lg' : 'bg-industrial-950 border-industrial-800 text-gray-500 hover:border-industrial-600 hover:bg-industrial-800'}`}><div className={`p-3 rounded-full mb-3 ${settings.dbProvider === 'oracle' ? 'bg-blue-500/20' : 'bg-industrial-900 group-hover:bg-industrial-700'}`}><Database size={28} className={settings.dbProvider === 'oracle' ? 'text-blue-400' : 'text-gray-500'} /></div><span className="font-semibold text-sm">Oracle Database</span></button>
                 </div>
                 <div className="bg-industrial-950/50 border border-industrial-800 rounded-xl p-6 relative overflow-hidden min-h-[350px]">
-                  {settings.dbProvider === 'local' && (<div className="flex flex-col items-center justify-center h-full py-12 animate-in fade-in zoom-in-95"><div className="w-16 h-16 bg-industrial-900 rounded-full flex items-center justify-center mb-4 border border-industrial-800"><HardDrive size={32} className="text-industrial-500" /></div><h3 className="text-lg font-medium text-gray-300">Browser Local Storage</h3><p className="text-sm text-gray-500 mt-2 max-w-sm text-center leading-relaxed">Data is stored securely within your browser's indexedDB/localStorage. No external server connection is required.</p></div>)}
                   {settings.dbProvider === 'mysql' && (<div className="space-y-6 animate-in fade-in slide-in-from-bottom-2"><div className="flex items-center gap-2 text-blue-400 mb-2 border-b border-blue-900/30 pb-2"><Server size={18} /><span className="text-sm font-semibold uppercase tracking-wider">MySQL Configuration</span></div><div className="grid grid-cols-1 md:grid-cols-2 gap-6"><div className="md:col-span-2"><label className="block text-sm font-medium text-gray-400 mb-2">Host Address</label><input type="text" name="mysqlHost" value={settings.mysqlHost} onChange={handleChange} placeholder="e.g., 127.0.0.1" className={`${inputBaseClasses} ${focusBlue}`} /></div><div><label className="block text-sm font-medium text-gray-400 mb-2">Port</label><input type="number" name="mysqlPort" value={settings.mysqlPort} onChange={handleChange} placeholder="3306" className={`${inputBaseClasses} ${focusBlue}`} /></div><div><label className="block text-sm font-medium text-gray-400 mb-2">Database Name</label><input type="text" name="mysqlDatabase" value={settings.mysqlDatabase} onChange={handleChange} placeholder="ocr_app_db" className={`${inputBaseClasses} ${focusBlue}`} /></div><div><label className="block text-sm font-medium text-gray-400 mb-2">Username</label><input type="text" name="mysqlUser" value={settings.mysqlUser} onChange={handleChange} className={`${inputBaseClasses} ${focusBlue}`} /></div><div><label className="block text-sm font-medium text-gray-400 mb-2">Password</label><div className="relative"><input type={showDbPassword ? "text" : "password"} name="mysqlPassword" value={settings.mysqlPassword} onChange={handleChange} className={`${inputBaseClasses} ${focusBlue}`} /><button type="button" onClick={() => setShowDbPassword(!showDbPassword)} className="absolute right-3 top-2.5 text-gray-500 hover:text-gray-300">{showDbPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></div></div></div></div>)}
                   {settings.dbProvider === 'oracle' && (<div className="space-y-6 animate-in fade-in slide-in-from-bottom-2"><div className="flex items-center gap-2 text-blue-400 mb-2 border-b border-blue-900/30 pb-2"><Database size={18} /><span className="text-sm font-semibold uppercase tracking-wider">Oracle DB Configuration</span></div><div className="grid grid-cols-1 md:grid-cols-2 gap-6"><div className="md:col-span-2"><label className="block text-sm font-medium text-gray-400 mb-2">Host Address</label><input type="text" name="oracleHost" value={settings.oracleHost} onChange={handleChange} placeholder="e.g., localhost" className={`${inputBaseClasses} ${focusRed}`} /></div><div><label className="block text-sm font-medium text-gray-400 mb-2">Port</label><input type="number" name="oraclePort" value={settings.oraclePort} onChange={handleChange} placeholder="1521" className={`${inputBaseClasses} ${focusRed}`} /></div><div><label className="block text-sm font-medium text-gray-400 mb-2">Service Name / SID</label><input type="text" name="oracleServiceName" value={settings.oracleServiceName} onChange={handleChange} placeholder="FREEPDB1" className={`${inputBaseClasses} ${focusRed}`} /></div><div><label className="block text-sm font-medium text-gray-400 mb-2">Username</label><input type="text" name="oracleUser" value={settings.oracleUser} onChange={handleChange} className={`${inputBaseClasses} ${focusRed}`} /></div><div><label className="block text-sm font-medium text-gray-400 mb-2">Password</label><div className="relative"><input type={showDbPassword ? "text" : "password"} name="oraclePassword" value={settings.oraclePassword} onChange={handleChange} className={`${inputBaseClasses} ${focusRed}`} /><button type="button" onClick={() => setShowDbPassword(!showDbPassword)} className="absolute right-3 top-2.5 text-gray-500 hover:text-gray-300">{showDbPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></div></div></div></div>)}
-                  {settings.dbProvider !== 'local' && (<div className="pt-6 mt-6 border-t border-industrial-800 flex items-center justify-between"><div className="flex flex-col gap-1 w-full"><div className="flex items-center gap-3"><button onClick={testDbConnection} disabled={isTestingConnection} className={`flex items-center gap-2 px-4 py-2 border rounded-lg transition-colors disabled:opacity-50 ${settings.dbProvider === 'mysql' ? 'bg-blue-900/20 text-blue-400 border-blue-900/50 hover:bg-blue-900/40' : 'bg-blue-900/20 text-blue-400 border-blue-900/50 hover:bg-blue-900/40'}`}>{isTestingConnection ? <Wifi size={18} className="animate-ping" /> : <Wifi size={18} />} Test Connection</button>{connectionStatus === 'success' && <span className="text-green-400 flex items-center gap-1.5 text-sm animate-in fade-in"><CheckCircle2 size={16} /> Connection Successful</span>}{connectionStatus === 'error' && <span className="text-red-400 flex items-center gap-1.5 text-sm animate-in fade-in"><AlertCircle size={16} /> Connection Failed</span>}</div>{connectionErrorMsg && <p className="text-red-400/80 text-xs font-mono mt-1 ml-1">{connectionErrorMsg}</p>}</div></div>)}
+                  <div className="pt-6 mt-6 border-t border-industrial-800 flex items-center justify-between"><div className="flex flex-col gap-1 w-full"><div className="flex items-center gap-3"><button onClick={testDbConnection} disabled={isTestingConnection} className={`flex items-center gap-2 px-4 py-2 border rounded-lg transition-colors disabled:opacity-50 ${settings.dbProvider === 'mysql' ? 'bg-blue-900/20 text-blue-400 border-blue-900/50 hover:bg-blue-900/40' : 'bg-blue-900/20 text-blue-400 border-blue-900/50 hover:bg-blue-900/40'}`}>{isTestingConnection ? <Wifi size={18} className="animate-ping" /> : <Wifi size={18} />} Test Connection</button>{connectionStatus === 'success' && <span className="text-green-400 flex items-center gap-1.5 text-sm animate-in fade-in"><CheckCircle2 size={16} /> Connection Successful</span>}{connectionStatus === 'error' && <span className="text-red-400 flex items-center gap-1.5 text-sm animate-in fade-in"><AlertCircle size={16} /> Connection Failed</span>}</div>{connectionErrorMsg && <p className="text-red-400/80 text-xs font-mono mt-1 ml-1">{connectionErrorMsg}</p>}</div></div>
                 </div>
              </section>
           )}
@@ -446,12 +525,82 @@ const handleReset = async () => {
                         
                         {/* 🔥 แก้ไขจุดที่ 2: ใช้ BASE_URL จาก .env 🔥 */}
                         {userApiKey.status === 'active' && (
-                            <div className="pt-4 border-t border-industrial-800">
-                                <h4 className="text-sm font-medium text-gray-300 mb-2">Example Usage (cURL)</h4>
-                                <div className="bg-black/50 p-4 rounded-lg border border-industrial-800 font-mono text-xs text-gray-400 overflow-x-auto">
-                                    <span className="text-purple-400">curl</span> -X POST {BASE_URL}/v1/ocr \<br/>
-                                    &nbsp;&nbsp;-H <span className="text-green-400">"Authorization: Bearer {showUserKey ? userApiKey.key : 'sk-...'}"</span> \<br/>
-                                    &nbsp;&nbsp;-F "file=@image.png"
+                            <div className="pt-4 border-t border-industrial-800 space-y-4">
+                                <h4 className="text-sm font-medium text-gray-300 mb-2">API Playground (Swagger style)</h4>
+                                
+                                <div className="space-y-3">
+                                  {[
+                                    { id: 'ocr' as const, method: 'POST', path: '/api/ocr_v1', title: 'OCR (JSON)', desc: 'Upload image/PDF and get OCR result.' },
+                                    { id: 'pdf' as const, method: 'POST', path: '/api/searchable_pdf', title: 'Searchable PDF', desc: 'Convert text into a downloadable searchable PDF.' }
+                                  ].map(endpoint => (
+                                    <div key={endpoint.id} className="border border-[#c3dff7] rounded overflow-hidden bg-[#f7fbff] shadow-sm">
+                                      <button
+                                        onClick={() => setOpenEndpoints(prev => ({ ...prev, [endpoint.id]: !prev[endpoint.id] }))}
+                                        className="w-full flex items-center justify-between px-3 py-2 text-left"
+                                      >
+                                        <div className="flex items-center gap-3">
+                                          <span className={`px-3 py-1 text-xs font-semibold rounded ${endpoint.method === 'POST' ? 'bg-[#61affe] text-white' : 'bg-gray-200 text-gray-800'}`}>{endpoint.method}</span>
+                                          <span className="font-mono text-sm text-gray-900">{endpoint.path}</span>
+                                          <span className="text-sm text-gray-600">{endpoint.title}</span>
+                                        </div>
+                                        <span className="text-gray-500">{openEndpoints[endpoint.id] ? '▲' : '▼'}</span>
+                                      </button>
+
+                                      {openEndpoints[endpoint.id] && (
+                                        <div className="border-t border-[#c3dff7] bg-white p-4 space-y-4">
+                                          <div className="flex flex-wrap items-center justify-between gap-3">
+                                            <div className="text-sm text-gray-700">{endpoint.desc}</div>
+                                            <div className="text-xs text-gray-500 bg-gray-100 px-3 py-1 rounded border border-gray-200 font-mono">Base URL: {playgroundBase}</div>
+                                          </div>
+
+                                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <div>
+                                              <label className="block text-xs text-gray-600 mb-1">Authorization (Bearer)</label>
+                                              <input value={swaggerAuth} readOnly className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded text-sm text-gray-800 font-mono" />
+                                            </div>
+                                            <div className="flex items-end justify-end">
+                                              <button onClick={() => swaggerAuth && navigator.clipboard.writeText(swaggerAuth)} className="px-3 py-2 text-xs border border-gray-300 rounded bg-white hover:bg-gray-50">Copy Key</button>
+                                            </div>
+                                          </div>
+
+                                          {endpoint.id === 'ocr' ? (
+                                            <div className="space-y-3">
+                                              <div>
+                                                <label className="block text-xs text-gray-600 mb-1">Request body (multipart/form-data)</label>
+                                                <input type="file" onChange={(e) => setSwaggerFile(e.target.files?.[0] || null)} className="w-full text-sm text-gray-800" />
+                                                <div className="text-xs text-gray-500 mt-1">Allowed: image/png, image/jpeg, webp, tiff, bmp, heic/heif, pdf</div>
+                                              </div>
+                                            </div>
+                                          ) : (
+                                            <div className="space-y-3">
+                                              <div>
+                                                <label className="block text-xs text-gray-600 mb-1">Request body (application/json)</label>
+                                                <textarea value={swaggerText} onChange={(e) => setSwaggerText(e.target.value)} rows={3} className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded text-sm text-gray-800" />
+                                              </div>
+                                              <div>
+                                                <label className="block text-xs text-gray-600 mb-1">Filename</label>
+                                                <input value={swaggerFilename} onChange={(e) => setSwaggerFilename(e.target.value)} className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded text-sm text-gray-800" />
+                                              </div>
+                                            </div>
+                                          )}
+
+                                          <div className="flex items-center gap-3">
+                                            <button onClick={() => { setSwaggerTab(endpoint.id); handleSwaggerTest(); }} disabled={swaggerLoading} className="px-4 py-2 bg-[#61affe] hover:bg-[#4b93db] text-white text-sm font-semibold rounded shadow">
+                                              {swaggerLoading ? 'Testing...' : 'Try it out'}
+                                            </button>
+                                            {swaggerError && <span className="text-xs text-red-500">{swaggerError}</span>}
+                                          </div>
+
+                                          <div className="space-y-2">
+                                            <div className="text-xs text-gray-600">Response</div>
+                                            <div className="bg-gray-900 border border-gray-800 rounded p-3 text-xs text-gray-100 font-mono whitespace-pre-wrap max-h-64 overflow-auto">
+                                              {swaggerResponse || 'No response yet.'}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  ))}
                                 </div>
                             </div>
                         )}

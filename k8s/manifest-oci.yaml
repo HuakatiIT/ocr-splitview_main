@@ -1,0 +1,264 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ocr
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-pvc
+  namespace: ocr
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: oci-bv
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ocr-backend-pvc
+  namespace: ocr
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: oci-bv
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: ocr
+spec:
+  ports:
+    - port: 3306
+      targetPort: 3306
+  selector:
+    app: mysql
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  namespace: ocr
+spec:
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              value: "123456789"   # change before production
+            - name: MYSQL_DATABASE
+              value: "ocr_users_db"
+          ports:
+            - containerPort: 3306
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: mysql-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: maildev
+  namespace: ocr
+spec:
+  ports:
+    - name: smtp
+      port: 1025
+      targetPort: 1025
+    - name: http
+      port: 1080
+      targetPort: 1080
+  selector:
+    app: maildev
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: maildev
+  namespace: ocr
+spec:
+  selector:
+    matchLabels:
+      app: maildev
+  template:
+    metadata:
+      labels:
+        app: maildev
+    spec:
+      containers:
+        - name: maildev
+          image: maildev/maildev:2
+          ports:
+            - containerPort: 1025
+            - containerPort: 1080
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ocr-backend-config
+  namespace: ocr
+data:
+  PORT: "3001"
+  DB_PROVIDER: "mysql"
+  SMTP_HOST: "maildev"
+  SMTP_PORT: "1025"
+  SMTP_SECURE: "false"
+  SMTP_USER: "maildev"
+  SMTP_PASS: "maildev"
+  MYSQL_HOST: "mysql.ocr.svc.cluster.local"
+  MYSQL_PORT: "3306"
+  MYSQL_USER: "root"
+  MYSQL_PASS: "123456789"       # keep in sync with MySQL
+  MYSQL_DB: "ocr_users_db"
+  ORACLE_HOST: "oracle-db"
+  ORACLE_PORT: "1521"
+  ORACLE_USER: "SYSTEM"
+  ORACLE_PASS: "admin123"
+  ORACLE_SERVICE: "FREEPDB1"
+  TYPHOON_BASE_URL: "https://api.opentyphoon.ai/v1"
+  DATA_DIR: "/data"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ocr-backend-secret
+  namespace: ocr
+type: Opaque
+stringData:
+  MAIL_USER: ""
+  MAIL_PASS: ""
+  TYPHOON_API_KEY: "replace-with-typhoon-key"   # set actual Typhoon key
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ocr-backend
+  namespace: ocr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ocr-backend
+  template:
+    metadata:
+      labels:
+        app: ocr-backend
+    spec:
+      containers:
+        - name: backend
+          image: ocr-backend:local   # replace with your registry/tag
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3001
+          envFrom:
+            - configMapRef:
+                name: ocr-backend-config
+            - secretRef:
+                name: ocr-backend-secret
+          volumeMounts:
+            - name: backend-data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /api/config
+              port: 3001
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /api/config
+              port: 3001
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: backend-data
+          persistentVolumeClaim:
+            claimName: ocr-backend-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ocr-backend
+  namespace: ocr
+spec:
+  selector:
+    app: ocr-backend
+  ports:
+    - port: 3001
+      targetPort: 3001
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ocr-frontend
+  namespace: ocr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ocr-frontend
+  template:
+    metadata:
+      labels:
+        app: ocr-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: ocr-frontend:local   # replace with your registry/tag
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          env:
+            - name: VITE_API_BASE_URL
+              value: "http://ocr-backend:3001"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ocr-frontend
+  namespace: ocr
+spec:
+  selector:
+    app: ocr-frontend
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ocr-ingress
+  namespace: ocr
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/proxy-body-size: "20m"
+spec:
+  rules:
+    - host: ocr.localtest.me   # change to your domain
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ocr-frontend
+                port:
+                  number: 80

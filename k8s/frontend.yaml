@@ -15,7 +15,8 @@ spec:
     spec:
       containers:
       - name: frontend
-        image: your-registry/ocr-frontend:1.0.0 # replace with pushed image
+        image: ocr-frontend:local
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 80
         livenessProbe:

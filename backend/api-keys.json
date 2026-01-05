@@ -1,1 +1,12 @@
-[]
+[
+  {
+    "id": "key-1765425227463",
+    "userId": 1,
+    "key": "sk-Ad2CdnNeu0bJ4Vy7h1VaVA",
+    "status": "active",
+    "createdAt": "2025-12-11T03:53:47.463Z",
+    "expiresAt": null,
+    "usageLimit": null,
+    "usageCount": 11
+  }
+]
